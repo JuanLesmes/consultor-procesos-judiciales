@@ -41,6 +41,7 @@ tipos = ["Notificaciones por Estados", "Notificaciones por Aviso", "Traslados es
 horas_entre_revisiones = 20      # cada despacho se revisa a lo sumo una vez en este lapso (cada consulta pesa ~1 MB)
 dias_ventana_inicial = 7         # días hacia atrás que se miran la primera vez
 analizar_pdf = true              # descargar los PDF (estado, autos) y buscar el radicado dentro
+analizar_detalle = true          # si el listado no trae documentos, abrir el detalle (muchos despachos ponen allí un PDF por auto)
 max_documentos_por_publicacion = 3
 max_paginas = 3
 solicitudes_por_minuto = 4

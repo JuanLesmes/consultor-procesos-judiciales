@@ -195,6 +195,25 @@ class ServicioVigilancia:
     def listar(self, solo_activos: bool = True) -> list[ProcesoVigilado]:
         return self._repositorio.listar_vigilados(solo_activos=solo_activos)
 
+    def simular_novedad(self, radicado: str, cantidad: int = 1) -> list[int]:
+        """Para pruebas y demostraciones: olvida localmente las últimas actuaciones del radicado.
+
+        En la siguiente verificación se vuelven a leer de la fuente y se tratan como nuevas (se
+        detectan los autos, se piden sus documentos y se notifica). No modifica nada en la Rama
+        Judicial; solo la base local. Se conserva al menos una actuación para que no sea línea base.
+        """
+        radicado = validar_radicado(radicado)
+        vigilado = self._repositorio.obtener_vigilado(radicado)
+        if vigilado is None or not vigilado.inicializado:
+            raise ProcesoNoEncontrado(f"El radicado {radicado} no está en vigilancia o aún no tiene línea base.")
+        total = len(self._repositorio.ids_actuaciones_conocidas(radicado))
+        if cantidad < 1 or cantidad >= total:
+            raise ValueError(f"Indique entre 1 y {total - 1} actuaciones (el proceso tiene {total} registradas).")
+        olvidadas = self._repositorio.olvidar_ultimas_actuaciones(radicado, cantidad)
+        vigilado.huella = None  # obliga a releer las actuaciones aunque la fecha no haya cambiado
+        self._repositorio.guardar_vigilado(vigilado)
+        return olvidadas
+
     def autos_registrados(self, radicado: str) -> list[Novedad]:
         return self._repositorio.listar_actuaciones(validar_radicado(radicado), solo_autos=True)
 

@@ -179,8 +179,14 @@ código de despacho (los 12 primeros dígitos del radicado más los descubiertos
 detalle durante la línea base) y, por cada despacho revisado hace más de
 `horas_entre_revisiones`, pide al portal Publicaciones Procesales los tipos configurados dentro
 de la ventana `[última revisión - 1 día, hoy]`. Las publicaciones nuevas se guardan y se
-analizan: primero título y resumen, después los PDF enlazados (`pypdf`), con las tres formas
-del radicado descritas en `dominio/reglas.py`. Cada coincidencia se persiste en
+analizan: primero título y resumen; si el listado no trae documentos, la **página de detalle** de
+la publicación (muchos juzgados publican allí cada auto como un PDF con el radicado corto en el
+nombre, "2025-00451 ...pdf", y dejan vacío el resumen del listado), primero los nombres de los
+archivos y luego su texto; y por último los PDF (`pypdf`, con `cryptography` para los cifrados
+con AES), empezando por la planilla del estado. Se usan las tres formas del radicado descritas en
+`dominio/reglas.py`. La lista se pide a la página "Inicio" del portal, que responde en
+`/web/publicaciones-procesales/inicio` y en la raíz `/`: si una da 404 (pasó el 4 de octubre de
+2026), el cliente usa la otra y se queda con ella. Cada coincidencia se persiste en
 `publicaciones_coincidencias`, se adjunta al resultado del radicado y se notifica como un
 `EventoNovedades` sin actuaciones y con `publicaciones`. La revisión falla de forma aislada por
 despacho (estado `ERROR`) y, si la fuente cae, el resto del lote queda `OMITIDO`.

@@ -67,6 +67,7 @@ Manejador = Callable[..., Any]
 RUTAS_PUBLICAS = frozenset({"/api/salud"})
 METODOS_QUE_MODIFICAN = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 MAXIMO_CUERPO = 64 * 1024
+DIAS_SIN_PUBLICACIONES = 4  # cubre un fin de semana con festivo sin falsas alarmas
 LIMITE_DESCARTE = 1024 * 1024  # cuerpo que se lee y descarta para poder responder limpio (Caddy corta en 1 MB)
 
 
@@ -490,9 +491,17 @@ class AplicacionWeb:
             )
         if self.trabajo.error:
             problemas.append(f"La última verificación falló: {self.trabajo.error}")
+        # Un fallo puntual del portal de publicaciones es un aviso; si un despacho lleva días sin
+        # poder revisarse (más que un fin de semana largo), es un problema.
         for resultado in self.trabajo.publicaciones or []:
             if resultado.get("estado") == "ERROR":
-                problemas.append(f"Publicaciones del despacho {resultado.get('despacho_codigo')}: {resultado.get('mensaje')}")
+                avisos.append(f"Publicaciones del despacho {resultado.get('despacho_codigo')}: {resultado.get('mensaje')}")
+        atrasados = self._despachos_sin_revisar(vigilados, ahora)
+        if atrasados:
+            problemas.append(
+                f"Los estados y avisos de {len(atrasados)} despacho(s) no se han podido revisar en "
+                f"{DIAS_SIN_PUBLICACIONES} días ({', '.join(atrasados[:5])})."
+            )
 
         cortacircuito = getattr(self._servicio.fuente, "cortacircuito", None)
         estado_circuito = cortacircuito.estado if isinstance(cortacircuito, Cortacircuito) else None
@@ -527,6 +536,20 @@ class AplicacionWeb:
             "presupuesto": presupuesto,
             "cortacircuito": estado_circuito,
         }
+
+    def _despachos_sin_revisar(self, vigilados: list[ProcesoVigilado], ahora: datetime) -> list[str]:
+        if self._servicio.publicaciones is None:
+            return []
+        limite = ahora - timedelta(days=DIAS_SIN_PUBLICACIONES)
+        codigos = sorted(
+            {c for v in vigilados if v.creado_en is None or v.creado_en < limite for c in v.codigos_despacho}
+        )
+        atrasados = []
+        for codigo in codigos:
+            revisado = self._repositorio.obtener_revision_despacho(codigo)
+            if revisado is None or revisado < limite:
+                atrasados.append(codigo)
+        return atrasados
 
     def _verificacion_atrasada(self, ahora: datetime, ultima: datetime | None) -> datetime | None:
         """La hora programada que debió ejecutarse y no se ejecutó (solo cuenta desde que arrancó la vigilancia)."""

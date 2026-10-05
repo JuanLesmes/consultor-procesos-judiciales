@@ -66,6 +66,20 @@ class RepositorioMemoria:
     def ids_actuaciones_conocidas(self, radicado: str) -> set[int]:
         return set(self._actuaciones.get(radicado, {}))
 
+    def olvidar_ultimas_actuaciones(self, radicado: str, cantidad: int) -> list[int]:
+        por_radicado = self._actuaciones.get(radicado, {})
+        orden = sorted(
+            por_radicado.values(),
+            key=lambda n: (n.actuacion.fecha_actuacion or date.min, n.actuacion.consecutivo, n.actuacion.id_registro),
+            reverse=True,
+        )
+        ids = [n.actuacion.id_registro for n in orden[: max(0, cantidad)]]
+        for id_registro in ids:
+            por_radicado.pop(id_registro, None)
+            self._documentos.pop(id_registro, None)
+            self._documentos_consultados.discard(id_registro)
+        return ids
+
     def guardar_novedades(self, novedades: Iterable[Novedad], momento: datetime) -> int:
         insertadas = 0
         for novedad in novedades:

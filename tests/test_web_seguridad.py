@@ -256,3 +256,34 @@ def test_servidor_real_con_usuarios_cabeceras_y_proxy(fuente, notificador, tmp_p
             assert http.get("/api/estado", headers=legitimo, auth=("ana", CLAVE)).status_code == 200
     finally:
         servidor.detener()
+
+
+def test_monitor_publicaciones_fallo_puntual_es_aviso_y_sostenido_es_problema(fuente, notificador, tmp_path):
+    from apoyo import FuentePublicacionesFalsa
+    from consultor_procesos.aplicacion.servicio_publicaciones import ServicioPublicaciones
+
+    reloj = Reloj(AHORA)
+    repo = RepositorioMemoria()
+    servicio = ServicioVigilancia(
+        fuente, repo, notificador, opciones=OpcionesVerificacion(descubrir_despachos=False), ahora=reloj,
+        publicaciones=ServicioPublicaciones(FuentePublicacionesFalsa(), repo, notificador, ahora=reloj),
+    )
+    aplicacion = AplicacionWeb(servicio, repo, fabrica_planificador=lambda ciclo: PlanificadorQuieto(), ahora=reloj)
+    vigilado = servicio.agregar(RADICADO)
+    vigilado.creado_en = AHORA - timedelta(days=10)
+    repo.guardar_vigilado(vigilado)
+    despacho = RADICADO[:12]
+    repo.registrar_revision_despacho(despacho, AHORA - timedelta(days=1))
+    aplicacion.trabajo.terminar(
+        AHORA, resumen=[], publicaciones=[{"despacho_codigo": despacho, "estado": "ERROR", "mensaje": "HTTP 404: Estado HTTP 404"}]
+    )
+    aplicacion.vigilante.iniciar()
+    try:
+        monitor = aplicacion.manejar("GET", "/api/monitor", {}, None)[1]
+        assert monitor["ok"] is True and any("HTTP 404" in a for a in monitor["avisos"])
+
+        repo.registrar_revision_despacho(despacho, AHORA - timedelta(days=5))
+        monitor = aplicacion.manejar("GET", "/api/monitor", {}, None)[1]
+        assert monitor["ok"] is False and despacho in monitor["problemas"][0]
+    finally:
+        aplicacion.vigilante.detener()

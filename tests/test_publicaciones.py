@@ -271,7 +271,8 @@ class TestServicioPublicaciones:
         assert resultado.estado == EstadoVerificacion.OK and resultado.nuevas == 2 and resultado.despacho == DESPACHO
         [coincidencia] = resultado.coincidencias
         assert coincidencia.radicado == RADICADO and coincidencia.forma == "radicado_completo" and coincidencia.donde == "titulo o resumen"
-        assert resultado.solicitudes == 2, "una consulta por tipo configurado, sin descargas"
+        assert resultado.solicitudes == 3, "una consulta por tipo configurado y el detalle del estado sin documentos"
+        assert ("detalle", hacer_publicacion("2").url_detalle) in fuente.llamadas
         assert repo.ids_publicaciones_conocidas(DESPACHO_CODIGO) == {"1", "2"}
         assert repo.obtener_revision_despacho(DESPACHO_CODIGO) == AHORA
         [evento] = notificador.eventos
@@ -408,3 +409,174 @@ class TestIntegracionConVigilancia:
         servicio.agregar(RADICADO)
         [resultado] = servicio.verificar_todos()
         assert resultado.publicaciones == [] and servicio.ultimos_resultados_publicaciones == [] and resultado.solicitudes == 2
+
+
+@respx.mock
+def test_si_la_ruta_inicio_da_404_usa_la_raiz_y_se_queda_con_ella(reloj: RelojFalso):
+    """El 4 oct 2026 /web/publicaciones-procesales/inicio respondía 404 y la raíz servía la misma consulta."""
+    inicio = respx.get("https://publicacionesprocesales.ramajudicial.gov.co/web/publicaciones-procesales/inicio").mock(
+        return_value=httpx.Response(404, text="<!doctype html><html><head><title>Estado HTTP 404 – No encontrado</title><style>h1{}</style>")
+    )
+    raiz = respx.get("https://publicacionesprocesales.ramajudicial.gov.co/").mock(
+        return_value=httpx.Response(200, text=html_lista([ITEM_1]))
+    )
+    with ClientePublicaciones(
+        agente_usuario="PruebaUA/1.0",
+        limitador=LimitadorTasa(6000, rafaga=100, reloj=reloj, dormir=reloj.dormir),
+        reintentos=PoliticaReintentos(intentos_max=1),
+        dormir=reloj.dormir,
+    ) as cliente:
+        primera = cliente.listar_publicaciones(DESPACHO_CODIGO, ESTADOS, date(2026, 9, 1), date(2026, 9, 2))
+        segunda = cliente.listar_publicaciones(DESPACHO_CODIGO, ESTADOS, date(2026, 9, 1), date(2026, 9, 2))
+    assert len(primera.publicaciones) == 1 and len(segunda.publicaciones) == 1
+    assert inicio.call_count == 1 and raiz.call_count == 2, "tras el 404 se sigue usando la raíz"
+    assert raiz.calls.last.request.url.params[NS + "idDespacho"] == DESPACHO_CODIGO
+
+
+@respx.mock
+def test_si_ninguna_ruta_responde_el_error_es_legible(reloj: RelojFalso):
+    pagina_404 = "<!doctype html><html lang='es'><head><title>Estado HTTP 404 – No encontrado</title><style>h1 {font-family:Tahoma}</style>"
+    respx.get("https://publicacionesprocesales.ramajudicial.gov.co/web/publicaciones-procesales/inicio").mock(
+        return_value=httpx.Response(404, text=pagina_404, headers={"Content-Type": "text/html"})
+    )
+    respx.get("https://publicacionesprocesales.ramajudicial.gov.co/").mock(
+        return_value=httpx.Response(404, text=pagina_404, headers={"Content-Type": "text/html"})
+    )
+    with ClientePublicaciones(
+        agente_usuario="PruebaUA/1.0",
+        limitador=LimitadorTasa(6000, rafaga=100, reloj=reloj, dormir=reloj.dormir),
+        reintentos=PoliticaReintentos(intentos_max=1),
+        dormir=reloj.dormir,
+    ) as cliente:
+        with pytest.raises(ErrorFuente) as info:
+            cliente.listar_publicaciones(DESPACHO_CODIGO, ESTADOS, date(2026, 9, 1), date(2026, 9, 2))
+    assert str(info.value) == "HTTP 404: Estado HTTP 404 – No encontrado"
+
+
+# --- detalle de la publicación (despachos que publican un PDF por auto) ----------------------------
+
+HTML_DETALLE = """<html><body>
+<a href="/documents/20135/1/infografia+publicaciones.pdf/cea8">Ver Instructivo</a>
+<div class="detalle-publicacion-ep container-fluid"><h2>Notificación por Estado No. 091 de 01 de octubre de 2026</h2>
+<div class="datosTitle"><b>Número de Radicación</b></div><ul><li>091</li></ul>
+<table id="tabla-docs-1-0"><tbody>
+<tr><td><a href="/c/document_library/get_file?uuid=aaaa&amp;groupId=6098902" target="_blank"> 2021-01203 RESUELVE RECURSO.pdf </a></td><td>01-oct-2026</td></tr>
+<tr><td><a href="/c/document_library/get_file?uuid=bbbb&amp;groupId=6098902" target="_blank"> 2024-00123 NO TIENE EN CUENTA NOTIF.pdf </a></td><td>01-oct-2026</td></tr>
+<tr><td><a href="/c/document_library/get_file?uuid=cccc&amp;groupId=6098902" target="_blank"> planilla estado 091.pdf </a></td><td>01-oct-2026</td></tr>
+</tbody></table></div>
+<footer><a href="/documents/20135/1/ABC.pdf/e52a">Ver ABC</a></footer></body></html>"""
+
+
+class TestDetalleDePublicacion:
+    def test_analizador_toma_solo_los_documentos_de_la_publicacion(self):
+        from consultor_procesos.adaptadores.publicaciones.analizador import analizar_detalle
+
+        detalle = analizar_detalle(HTML_DETALLE)
+        assert [d.etiqueta for d in detalle.documentos] == [
+            "2021-01203 RESUELVE RECURSO.pdf",
+            "2024-00123 NO TIENE EN CUENTA NOTIF.pdf",
+            "planilla estado 091.pdf",
+        ], "sin el instructivo ni el ABC del portal"
+        assert detalle.documentos[1].url == URL_PUB + "/c/document_library/get_file?uuid=bbbb&groupId=6098902"
+        assert "Estado No. 091" in detalle.texto
+
+    def test_detalle_con_estructura_desconocida_falla_en_voz_alta(self):
+        from consultor_procesos.adaptadores.publicaciones.analizador import analizar_detalle
+        from consultor_procesos.dominio.errores import RespuestaInesperada
+
+        with pytest.raises(RespuestaInesperada, match="detalle-publicacion-ep"):
+            analizar_detalle("<html><body><div class='otra-cosa'></div></body></html>")
+
+    def test_encuentra_el_radicado_en_el_nombre_del_pdf_del_detalle(self, entorno):
+        """Caso real (4 oct 2026, Juzgado 036 de Pequeñas Causas de Bogotá): el listado no trae resumen ni
+        documentos y el auto aparece en el detalle como '2025-00451 NO TIENE EN CUENTA NOTIF.pdf'."""
+        from consultor_procesos.adaptadores.publicaciones.analizador import analizar_detalle
+
+        servicio, fuente, repo, notificador, reloj, vigilado = entorno
+        publicacion = hacer_publicacion("91", titulo="Notificación por Estado No.091 de 01 de octubre de 2026", resumen="", documentos=())
+        fuente.registrar(publicacion)
+        fuente.detalles[publicacion.url_detalle] = analizar_detalle(HTML_DETALLE)
+
+        [resultado] = servicio.revisar([vigilado])
+
+        [coincidencia] = resultado.coincidencias
+        assert coincidencia.forma == "anio_consecutivo" and coincidencia.donde == "documento: 2024-00123 NO TIENE EN CUENTA NOTIF.pdf"
+        assert coincidencia.fragmento == "2024-00123 NO TIENE EN CUENTA NOTIF.pdf"
+        assert [d.etiqueta for d in coincidencia.publicacion.documentos] == [
+            "2024-00123 NO TIENE EN CUENTA NOTIF.pdf",
+            "planilla estado 091.pdf",
+        ], "se guardan el documento del proceso y la planilla, no los autos de otros procesos"
+        assert not any(l[0] == "descargar" for l in fuente.llamadas), "el nombre bastó: no se descargó ningún PDF"
+        [guardada] = repo.listar_publicaciones(DESPACHO_CODIGO)
+        assert guardada.analizada and len(guardada.documentos) == 2
+        [evento] = notificador.eventos
+        assert evento.publicaciones[0].donde.startswith("documento: 2024-00123")
+
+    def test_si_ningun_nombre_lo_menciona_lee_primero_la_planilla(self, entorno):
+        from consultor_procesos.dominio.modelos import DetallePublicacion, DocumentoPublicado
+
+        servicio, fuente, repo, notificador, reloj, vigilado = entorno
+        publicacion = hacer_publicacion("92", resumen="", documentos=())
+        auto = DocumentoPublicado("Auto 1.pdf", URL_PUB + "/c/document_library/get_file?uuid=1")
+        planilla = DocumentoPublicado("planilla estado 092.pdf", URL_PUB + "/c/document_library/get_file?uuid=2")
+        fuente.registrar(publicacion, {planilla.url: pdf_con_texto(f"ESTADO 092 Radicado {RADICADO} AUTO REQUIERE")})
+        fuente.detalles[publicacion.url_detalle] = DetallePublicacion(texto="Estado 092", documentos=(auto, planilla))
+
+        [resultado] = servicio.revisar([vigilado])
+
+        [coincidencia] = resultado.coincidencias
+        assert coincidencia.donde == "documento: planilla estado 092.pdf"
+        descargas = [l[1] for l in fuente.llamadas if l[0] == "descargar"]
+        assert descargas == [planilla.url], "la planilla primero; encontrado ahí, no se abren más PDF"
+
+    def test_detalle_que_no_responde_no_frena_la_revision(self, entorno):
+        servicio, fuente, repo, notificador, reloj, vigilado = entorno
+        fuente.registrar(hacer_publicacion("93", resumen="", documentos=()))
+        [resultado] = servicio.revisar([vigilado])
+        assert resultado.estado == EstadoVerificacion.OK and resultado.coincidencias == []
+
+    def test_cambio_de_estructura_del_detalle_deja_el_despacho_en_error(self, entorno):
+        from consultor_procesos.dominio.errores import RespuestaInesperada
+
+        servicio, fuente, repo, notificador, reloj, vigilado = entorno
+        fuente.registrar(hacer_publicacion("94", resumen="", documentos=()))
+        fuente.error_detalle = RespuestaInesperada("La página de detalle de la publicación no tiene la sección")
+        [resultado] = servicio.revisar([vigilado])
+        assert resultado.estado == EstadoVerificacion.ERROR and "detalle" in resultado.mensaje
+        assert repo.obtener_revision_despacho(DESPACHO_CODIGO) is None, "se reintentará en la próxima revisión"
+
+
+@respx.mock
+def test_cliente_obtiene_el_detalle_y_usa_la_raiz_si_inicio_da_404(reloj: RelojFalso):
+    inicio = respx.get("https://publicacionesprocesales.ramajudicial.gov.co/web/publicaciones-procesales/inicio").mock(
+        return_value=httpx.Response(404, text="<html><title>404</title></html>")
+    )
+    raiz = respx.get("https://publicacionesprocesales.ramajudicial.gov.co/").mock(return_value=httpx.Response(200, text=HTML_DETALLE))
+    with ClientePublicaciones(
+        agente_usuario="PruebaUA/1.0",
+        limitador=LimitadorTasa(6000, rafaga=100, reloj=reloj, dormir=reloj.dormir),
+        reintentos=PoliticaReintentos(intentos_max=1),
+        dormir=reloj.dormir,
+    ) as cliente:
+        detalle = cliente.obtener_detalle(URL_PUB + "/web/publicaciones-procesales/inicio?articleId=91&p_p_id=x")
+    assert len(detalle.documentos) == 3 and inicio.call_count == 1
+    assert raiz.calls.last.request.url.params["articleId"] == "91"
+
+
+@pytest.mark.parametrize(
+    "etiqueta, general",
+    [
+        ("planilla estado 091.pdf", True),
+        ("ESTADO 82.pdf", True),
+        ("TRASLADO No. 011 - 30 SEPTIEMBRE.pdf", True),
+        ("2022-00850Auto Corre Traslado.pdf", False),
+        ("2021-01203 AutoRemitirCorrerTraslado.pdf", False),
+        ("11001418903620250045100 aviso.pdf", False),
+        ("Auto 1.pdf", False),
+    ],
+)
+def test_documentos_generales_frente_a_autos_de_un_proceso(etiqueta, general):
+    from consultor_procesos.aplicacion.servicio_publicaciones import _es_documento_general
+    from consultor_procesos.dominio.modelos import DocumentoPublicado
+
+    assert _es_documento_general(DocumentoPublicado(etiqueta, "https://x")) is general

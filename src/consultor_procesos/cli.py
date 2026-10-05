@@ -192,6 +192,7 @@ def construir_servicio(
                 horas_entre_revisiones=p.horas_entre_revisiones,
                 dias_ventana_inicial=p.dias_ventana_inicial,
                 analizar_pdf=p.analizar_pdf,
+                analizar_detalle=p.analizar_detalle,
                 max_documentos_por_publicacion=p.max_documentos_por_publicacion,
                 max_paginas=p.max_paginas,
                 pausa_entre_despachos_segundos=p.pausa_entre_despachos_segundos,
@@ -398,6 +399,13 @@ def construir_analizador() -> argparse.ArgumentParser:
     s = sub.add_parser("crear-usuario", help=f"Genera la línea de un usuario para {VARIABLE_USUARIOS} (no guarda nada).")
     s.add_argument("nombre", help="Nombre de usuario (letras, números, punto, guion, arroba).")
     s.add_argument("--clave-stdin", action="store_true", help="Leer la contraseña de la entrada estándar en vez de pedirla.")
+
+    s = sub.add_parser(
+        "simular-novedad",
+        help="Prueba: olvida localmente las últimas actuaciones de un radicado para que la próxima verificación las traiga como nuevas.",
+    )
+    s.add_argument("radicado")
+    s.add_argument("--cantidad", type=int, default=1, help="Cuántas actuaciones recientes olvidar (por defecto 1).")
 
     s = sub.add_parser("respaldar", help="Copia consistente de la base de datos, aunque el servidor esté en marcha.")
     s.add_argument("--destino", default="respaldos", help="Carpeta de los respaldos (por defecto ./respaldos).")
@@ -667,6 +675,24 @@ def _cmd_crear_usuario(args: argparse.Namespace, salida: TextIO) -> int:
     return CODIGO_OK
 
 
+def _cmd_simular_novedad(args: argparse.Namespace, servicio: ServicioVigilancia, salida: TextIO) -> int:
+    try:
+        olvidadas = servicio.simular_novedad(args.radicado, args.cantidad)
+    except ValueError as exc:
+        if isinstance(exc, RadicadoInvalido):
+            raise
+        print(f"Error: {exc}", file=sys.stderr)
+        return CODIGO_USO
+    ids = ", ".join(str(i) for i in olvidadas)
+    print(f"Se olvidaron {len(olvidadas)} actuación(es) de {args.radicado} en la base local (ids {ids}).", file=salida)
+    print("En la próxima verificación se leerán de la Rama Judicial como nuevas: se marcarán los autos y se notificará.", file=salida)
+    print(
+        f"Para verla ya: consultor-procesos verificar --radicado {args.radicado}  (o «Verificar ahora» en la interfaz).",
+        file=salida,
+    )
+    return CODIGO_OK
+
+
 def _cmd_respaldar(args: argparse.Namespace, repositorio: Repositorio, salida: TextIO) -> int:
     respaldar = getattr(repositorio, "respaldar", None)
     if not callable(respaldar):
@@ -711,6 +737,8 @@ def _despachar(
         return _cmd_web(args, config, servicio, repositorio, fuente, salida)
     if args.comando == "respaldar":
         return _cmd_respaldar(args, repositorio, salida)
+    if args.comando == "simular-novedad":
+        return _cmd_simular_novedad(args, servicio, salida)
     raise ValueError(f"Comando desconocido: {args.comando}")
 
 

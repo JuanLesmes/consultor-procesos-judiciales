@@ -337,3 +337,15 @@ def test_configuracion_desde_variable_de_entorno(tmp_path: Path, monkeypatch):
     assert cargar_configuracion().web.puerto == 9999
     monkeypatch.setenv("CONSULTOR_CONFIG", str(tmp_path / "no-existe.toml"))
     assert cargar_configuracion().web.puerto == 8770, "sin archivo: valores por defecto"
+
+
+def test_simular_novedad_de_extremo_a_extremo(ejecutar: Ejecutor):
+    registrar_proceso(ejecutar.fuente)
+    ejecutar("agregar", RADICADO, "--alias", "Demo")
+    ejecutar("verificar")
+    codigo, texto = ejecutar("simular-novedad", RADICADO)
+    assert codigo == 0 and "Se olvidaron 1 actuación" in texto and "verificar --radicado" in texto
+    codigo, texto = ejecutar("verificar", "--radicado", RADICADO)
+    assert codigo == 0 and "[AUTO]" in texto and "AUTO ADMITE DEMANDA" in texto
+    codigo, _ = ejecutar("simular-novedad", RADICADO, "--cantidad", "5")
+    assert codigo == cli.CODIGO_USO

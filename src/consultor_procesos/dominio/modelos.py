@@ -135,6 +135,18 @@ class DocumentoPublicado:
 
 
 @dataclass(frozen=True)
+class DetallePublicacion:
+    """La página de detalle de una publicación: su texto y todos sus documentos.
+
+    Algunos despachos no ponen nada en el resumen del listado y publican cada auto del estado
+    como un PDF aparte en el detalle, con el radicado corto en el nombre ("2025-00451 ...pdf").
+    """
+
+    texto: str
+    documentos: tuple[DocumentoPublicado, ...] = ()
+
+
+@dataclass(frozen=True)
 class Publicacion:
     """Una publicación con efectos procesales de un despacho (estado, aviso, traslado, edicto...)."""
 

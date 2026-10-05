@@ -191,3 +191,11 @@ def test_respaldo_sqlite_es_una_copia_consistente(tmp_path):
         destino = repo.respaldar(tmp_path / "respaldos" / "copia.sqlite")
     with RepositorioSQLite(destino) as copia:
         assert copia.obtener_vigilado(RADICADO).alias == "Demo"
+
+
+def test_olvidar_ultimas_actuaciones(repositorio):
+    novedades = [novedad(1, 1, False), novedad(2, 2, True), novedad(3, 3, False), novedad(9, 1, False, radicado=RADICADO_2)]
+    repositorio.guardar_novedades(novedades, datetime(2026, 9, 2, 10, 0))
+    assert repositorio.olvidar_ultimas_actuaciones(RADICADO, 2) == [3, 2]
+    assert repositorio.ids_actuaciones_conocidas(RADICADO) == {1}
+    assert repositorio.ids_actuaciones_conocidas(RADICADO_2) == {9}, "no toca otros radicados"

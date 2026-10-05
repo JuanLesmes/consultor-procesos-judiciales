@@ -17,7 +17,7 @@ from datetime import date
 from urllib.parse import parse_qs, urljoin, urlparse
 
 from ...dominio.errores import RespuestaInesperada
-from ...dominio.modelos import DocumentoPublicado, PaginaPublicaciones, Publicacion
+from ...dominio.modelos import DetallePublicacion, DocumentoPublicado, PaginaPublicaciones, Publicacion
 from ...enlaces import URL_PUBLICACIONES
 
 # Cada publicación es una fila `<tr class=" col-xs-12 tramites ">`; el resumen puede traer tablas
@@ -149,6 +149,26 @@ def analizar_bloque(cuerpo: str, url_base: str, id_estructura: int | None) -> Pu
         entidad=categorias.get("entidad", ""),
         especialidad=categorias.get("especialidad", ""),
     )
+
+
+_MARCA_DETALLE = 'class="detalle-publicacion-ep'
+
+
+def analizar_detalle(pagina_html: str, url_base: str = URL_PUBLICACIONES) -> DetallePublicacion:
+    """La sección de la página de detalle con los datos y la tabla de documentos de la publicación.
+
+    Se recorta desde el contenedor `detalle-publicacion-ep` hasta el pie de página, para no
+    confundir con documentos de la publicación los PDF fijos del portal (instructivo, ABC).
+    """
+    inicio = pagina_html.find(_MARCA_DETALLE)
+    if inicio < 0:
+        raise RespuestaInesperada(
+            "La página de detalle de la publicación no tiene la sección 'detalle-publicacion-ep'; "
+            "probablemente cambió la estructura del portal."
+        )
+    fin = pagina_html.find("<footer", inicio)
+    seccion = pagina_html[inicio : fin if fin > 0 else len(pagina_html)]
+    return DetallePublicacion(texto=texto_plano(seccion), documentos=_documentos(seccion, url_base))
 
 
 def analizar_total(pagina_html: str) -> int | None:

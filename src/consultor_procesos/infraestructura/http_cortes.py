@@ -13,7 +13,9 @@ SEMIABIERTO nunca queda tomada y el circuito no se bloquea hasta reiniciar el pr
 
 from __future__ import annotations
 
+import html
 import logging
+import re
 import time
 import unicodedata
 from typing import Any
@@ -145,6 +147,10 @@ class SolicitanteCortes:
                 if cuerpo.get(clave):
                     return f"HTTP {respuesta.status_code}: {cuerpo[clave]}"
         texto = respuesta.text.strip()
+        if "html" in respuesta.headers.get("Content-Type", "").lower() or texto.lower().startswith(("<!doctype", "<html")):
+            # Una página de error HTML: basta su título, no 200 caracteres de estilos.
+            titulo = re.search(r"<title[^>]*>(.*?)</title>", texto, re.S | re.I)
+            texto = html.unescape(titulo.group(1)).strip() if titulo else ""
         return f"HTTP {respuesta.status_code}: {texto[:200] or respuesta.reason_phrase}"
 
 

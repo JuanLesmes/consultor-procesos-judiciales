@@ -464,3 +464,35 @@ class TestSinHuecosNiSilencios:
 
         assert resultado.estado == EstadoVerificacion.ERROR
         assert 1004 not in entorno.repo.ids_actuaciones_conocidas(RADICADO), "se reintentará en la próxima verificación"
+
+
+class TestSimularNovedad:
+    def test_la_actuacion_olvidada_vuelve_como_novedad_y_se_notifica(self, entorno):
+        registrar_base(entorno.fuente)
+        entorno.servicio.agregar(RADICADO, alias="Demo")
+        entorno.servicio.verificar_todos()
+        assert entorno.notificador.eventos == [], "la línea base no notifica"
+        entorno.reloj.avanzar(hours=1)
+
+        olvidadas = entorno.servicio.simular_novedad(RADICADO, cantidad=2)
+        [resultado] = entorno.servicio.verificar_todos()
+
+        assert olvidadas == [1003, 1002], "las más recientes primero"
+        assert resultado.estado == EstadoVerificacion.OK and not resultado.es_linea_base
+        assert sorted(n.actuacion.id_registro for n in resultado.novedades) == [1002, 1003]
+        assert [n.actuacion.id_registro for n in resultado.autos] == [1002], "la 1002 es 'AUTO ADMITE DEMANDA'"
+        [evento] = entorno.notificador.eventos
+        assert evento.alias == "Demo" and len(evento.novedades) == 2
+
+    @pytest.mark.parametrize("cantidad", [0, 3, 10])
+    def test_cantidad_fuera_de_rango(self, entorno, cantidad):
+        registrar_base(entorno.fuente)
+        entorno.servicio.agregar(RADICADO)
+        entorno.servicio.verificar_todos()
+        with pytest.raises(ValueError, match="entre 1 y 2"):
+            entorno.servicio.simular_novedad(RADICADO, cantidad=cantidad)
+
+    def test_radicado_sin_linea_base(self, entorno):
+        entorno.servicio.agregar(RADICADO)
+        with pytest.raises(ProcesoNoEncontrado):
+            entorno.servicio.simular_novedad(RADICADO)

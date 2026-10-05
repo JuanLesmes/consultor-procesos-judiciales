@@ -85,6 +85,7 @@ class ConfigPublicaciones:
     horas_entre_revisiones: float = 20.0
     dias_ventana_inicial: int = 7
     analizar_pdf: bool = True
+    analizar_detalle: bool = True
     max_documentos_por_publicacion: int = 3
     max_paginas: int = 3
     solicitudes_por_minuto: float = 4.0
@@ -255,6 +256,7 @@ tipos = ["Notificaciones por Estados", "Notificaciones por Aviso", "Traslados es
 horas_entre_revisiones = 20      # cada despacho se revisa a lo sumo una vez en este lapso (cada consulta pesa ~1 MB)
 dias_ventana_inicial = 7         # días hacia atrás que se miran la primera vez
 analizar_pdf = true              # descargar los PDF (estado, autos) y buscar el radicado dentro
+analizar_detalle = true          # si el listado no trae documentos, abrir el detalle (muchos despachos ponen allí un PDF por auto)
 max_documentos_por_publicacion = 3
 max_paginas = 3
 solicitudes_por_minuto = 4

@@ -9,6 +9,7 @@ from typing import Protocol, runtime_checkable
 from .modelos import (
     CoincidenciaPublicacion,
     DescargaDocumento,
+    DetallePublicacion,
     DetalleProceso,
     Documento,
     EventoNovedades,
@@ -57,6 +58,8 @@ class FuentePublicaciones(Protocol):
         por_pagina: int = 75,
     ) -> PaginaPublicaciones: ...
 
+    def obtener_detalle(self, url_detalle: str) -> DetallePublicacion: ...
+
     def descargar(self, url: str) -> bytes: ...
 
 
@@ -87,6 +90,10 @@ class Repositorio(ContadorSolicitudes, Protocol):
 
     # --- actuaciones y novedades ---
     def ids_actuaciones_conocidas(self, radicado: str) -> set[int]: ...
+
+    def olvidar_ultimas_actuaciones(self, radicado: str, cantidad: int) -> list[int]:
+        """Borra de la base local las `cantidad` actuaciones más recientes del radicado (y sus documentos)."""
+        ...
 
     def guardar_novedades(self, novedades: Iterable[Novedad], momento: datetime) -> int: ...
 

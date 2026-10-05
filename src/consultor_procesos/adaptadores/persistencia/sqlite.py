@@ -310,6 +310,22 @@ class RepositorioSQLite:
         self._conexion.commit()
         return cursor.rowcount > 0
 
+    @_sincronizado
+    def olvidar_ultimas_actuaciones(self, radicado: str, cantidad: int) -> list[int]:
+        filas = self._conexion.execute(
+            """
+            SELECT id_registro FROM actuaciones_vistas WHERE radicado = ?
+            ORDER BY fecha_actuacion DESC, consecutivo DESC, id_registro DESC LIMIT ?
+            """,
+            (radicado, max(0, cantidad)),
+        ).fetchall()
+        ids = [int(f["id_registro"]) for f in filas]
+        for id_registro in ids:
+            self._conexion.execute("DELETE FROM documentos WHERE id_registro = ?", (id_registro,))
+            self._conexion.execute("DELETE FROM actuaciones_vistas WHERE id_registro = ?", (id_registro,))
+        self._conexion.commit()
+        return ids
+
     # --- actuaciones y novedades -------------------------------------------------------
 
     @_sincronizado

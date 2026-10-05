@@ -3,6 +3,12 @@
 Cada consulta filtrada devuelve una página HTML cercana a 1 MB (incluye el catálogo completo
 de despachos), así que este cliente usa un ritmo más lento que el de la CPNU y la aplicación
 revisa cada despacho a lo sumo una vez cada varias horas.
+
+La lista se pide a la página "Inicio" del portal. Esa página responde en dos direcciones: la
+ruta amigable `/web/publicaciones-procesales/inicio` y la raíz `/` (página por defecto del
+sitio). El 4 de octubre de 2026 la primera empezó a responder 404 mientras la raíz seguía
+sirviendo la misma consulta; por eso, ante un 404, se prueba la otra y se sigue usando la que
+funcione.
 """
 
 from __future__ import annotations
@@ -10,15 +16,19 @@ from __future__ import annotations
 import time
 from datetime import date
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
-from ...dominio.modelos import PaginaPublicaciones
+from ...dominio.errores import ErrorFuente
+from ...dominio.modelos import DetallePublicacion, PaginaPublicaciones
 from ...enlaces import INSTANCIA_PORTLET_PUBLICACIONES, PORTLET_PUBLICACIONES, RUTA_PUBLICACIONES_INICIO, URL_PUBLICACIONES
 from ...infraestructura.cortesia import Cortacircuito, Dormir, LimitadorTasa, PoliticaReintentos, PresupuestoDiario
 from ...infraestructura.http_cortes import SolicitanteCortes, cabeceras_predeterminadas, preparar_cliente_http
-from .analizador import analizar_lista
+from .analizador import analizar_detalle, analizar_lista
+
+
+RUTAS_LISTA = (RUTA_PUBLICACIONES_INICIO, "/")
 
 
 class ClientePublicaciones:
@@ -42,6 +52,7 @@ class ClientePublicaciones:
     ) -> None:
         self._url_base = url_base
         self._instancia = instancia_portlet
+        self._rutas = list(RUTAS_LISTA)
         self._http, propio = preparar_cliente_http(
             cliente_http, url_base, tiempo_espera, cabeceras_predeterminadas(agente_usuario, aceptar="text/html,*/*;q=0.8")
         )
@@ -110,13 +121,31 @@ class ClientePublicaciones:
         pagina: int = 1,
         por_pagina: int = 75,
     ) -> PaginaPublicaciones:
-        respuesta = self._solicitante.get(
-            RUTA_PUBLICACIONES_INICIO,
-            self.parametros(despacho_codigo, id_estructura, desde, hasta, pagina, por_pagina),
-        )
+        parametros = self.parametros(despacho_codigo, id_estructura, desde, hasta, pagina, por_pagina)
+        for intento, ruta in enumerate(list(self._rutas)):
+            try:
+                respuesta = self._solicitante.get(ruta, parametros)
+                break
+            except ErrorFuente as exc:
+                if exc.codigo != 404 or intento == len(self._rutas) - 1:
+                    raise
+                # La ruta respondió 404: se prueba la siguiente y, si sirve, pasa a ser la primera.
+                self._rutas.append(self._rutas.pop(0))
         return analizar_lista(
             respuesta.text, id_estructura=id_estructura, pagina=pagina, por_pagina=por_pagina, url_base=self._url_base
         )
+
+    def obtener_detalle(self, url_detalle: str) -> DetallePublicacion:
+        destino = urljoin(self._url_base + "/", url_detalle)
+        try:
+            respuesta = self._solicitante.get(destino)
+        except ErrorFuente as exc:
+            partes = urlsplit(destino)
+            if exc.codigo != 404 or partes.path != RUTA_PUBLICACIONES_INICIO:
+                raise
+            # Mismo respaldo que en la lista: la página "Inicio" también responde en la raíz.
+            respuesta = self._solicitante.get(urlunsplit(partes._replace(path="/")))
+        return analizar_detalle(respuesta.text, url_base=self._url_base)
 
     def descargar(self, url: str) -> bytes:
         destino = urljoin(self._url_base + "/", url)

@@ -15,6 +15,7 @@ from consultor_procesos.dominio.modelos import (
     Actuacion,
     DescargaDocumento,
     DetalleProceso,
+    DetallePublicacion,
     Documento,
     PaginaActuaciones,
     Proceso,
@@ -400,10 +401,12 @@ class FuentePublicacionesFalsa:
     def __init__(self) -> None:
         self.publicaciones: dict[tuple[str, int], list[Publicacion]] = {}
         self.contenidos: dict[str, bytes] = {}
+        self.detalles: dict[str, DetallePublicacion] = {}
         self.solicitudes_realizadas = 0
         self.llamadas: list[tuple] = []
         self.error_listar: Exception | None = None
         self.error_descargar: Exception | None = None
+        self.error_detalle: Exception | None = None
 
     def registrar(self, publicacion: Publicacion, contenidos: dict[str, bytes] | None = None) -> None:
         clave = (publicacion.despacho_codigo, publicacion.id_estructura or 0)
@@ -423,6 +426,15 @@ class FuentePublicacionesFalsa:
         ]
         inicio = (pagina - 1) * por_pagina
         return PaginaPublicaciones(tuple(todas[inicio : inicio + por_pagina]), pagina=pagina, por_pagina=por_pagina, total=len(todas))
+
+    def obtener_detalle(self, url_detalle: str) -> DetallePublicacion:
+        self.solicitudes_realizadas += 1
+        self.llamadas.append(("detalle", url_detalle))
+        if self.error_detalle is not None:
+            raise self.error_detalle
+        if url_detalle not in self.detalles:
+            raise ErrorFuente(f"HTTP 404: no existe {url_detalle}", codigo=404)
+        return self.detalles[url_detalle]
 
     def descargar(self, url: str) -> bytes:
         self.solicitudes_realizadas += 1

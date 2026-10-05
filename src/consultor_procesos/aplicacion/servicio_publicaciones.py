@@ -3,22 +3,26 @@
 Por cada despacho que aparezca en los radicados vigilados se consultan, como mucho una vez
 cada `horas_entre_revisiones`, los tipos de publicación configurados dentro de una ventana
 de fechas. Las publicaciones nuevas se guardan y se buscan en ellas los radicados vigilados:
-primero en el título y el resumen; si no aparecen y la publicación trae PDF (el estado, los
-autos del estado), se descargan y se lee su texto. Cada coincidencia se notifica como una
-novedad del radicado con el enlace directo a la publicación y a sus documentos.
+primero en el título y el resumen; si el listado no trae documentos, en la página de detalle
+de la publicación (muchos despachos publican allí cada auto como un PDF con el radicado corto
+en el nombre, "2025-00451 ...pdf"); y por último dentro de los PDF (la planilla del estado, los
+autos). Cada coincidencia se notifica como una novedad del radicado con el enlace directo a la
+publicación y al documento donde aparece.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
-from ..dominio.errores import ErrorConsultor, ErrorFuente, FuenteNoDisponible, PresupuestoAgotado
+from ..dominio.errores import ErrorConsultor, ErrorFuente, FuenteNoDisponible, PresupuestoAgotado, RespuestaInesperada
 from ..dominio.modelos import (
     CoincidenciaPublicacion,
+    DocumentoPublicado,
     EstadoVerificacion,
     EventoNovedades,
     ProcesoVigilado,
@@ -31,6 +35,11 @@ from ..enlaces import TIPOS_PUBLICACION
 from ..infraestructura.pdf import extraer_texto_pdf
 
 log = logging.getLogger(__name__)
+
+# Documentos que listan varios procesos a la vez: se leen primero si hay que abrir PDF.
+PALABRAS_DOCUMENTO_GENERAL = ("PLANILLA", "ESTADO", "TRASLADO", "AVISO", "EDICTO", "LISTADO", "RELACION")
+MAX_DOCUMENTOS_GUARDADOS = 10
+_RE_INICIA_CON_RADICADO = re.compile(r"\s*(\d{4}\s*-\s*\d{3,6}|\d{23}|\d{21})")
 
 TIPOS_PREDETERMINADOS: tuple[int, ...] = (
     TIPOS_PUBLICACION["Notificaciones por Estados"],
@@ -47,11 +56,21 @@ class OpcionesPublicaciones:
     dias_ventana_inicial: int = 7
     dias_solapamiento: int = 1
     analizar_pdf: bool = True
+    analizar_detalle: bool = True  # abrir la página de detalle cuando el listado no trae documentos
     max_documentos_por_publicacion: int = 3
     max_paginas: int = 3
     por_pagina: int = 75
     pausa_entre_despachos_segundos: float = 5.0
     max_bytes_pdf: int = 15_000_000
+
+
+def _es_documento_general(documento: DocumentoPublicado) -> bool:
+    """La planilla del estado, el listado de traslados... Un archivo que empieza por un radicado
+    corto ("2022-00850 Auto Corre Traslado.pdf") es el auto de un proceso, aunque diga "traslado"."""
+    etiqueta = documento.etiqueta.upper()
+    if _RE_INICIA_CON_RADICADO.match(etiqueta):
+        return False
+    return any(palabra in etiqueta for palabra in PALABRAS_DOCUMENTO_GENERAL)
 
 
 class ServicioPublicaciones:
@@ -220,47 +239,84 @@ class ServicioPublicaciones:
     def analizar_publicacion(
         self, publicacion: Publicacion, radicados: Iterable[str]
     ) -> tuple[Publicacion, list[CoincidenciaPublicacion]]:
-        """Busca los radicados en el título y el resumen y, si hace falta, dentro de los PDF enlazados."""
+        """Busca los radicados en el título y el resumen, luego en el detalle y, si hace falta, en los PDF."""
         pendientes = list(dict.fromkeys(radicados))
-        coincidencias: list[CoincidenciaPublicacion] = []
-        texto_base = f"{publicacion.titulo}\n{publicacion.resumen}"
-        for radicado in list(pendientes):
-            hallazgo = buscar_radicado(texto_base, radicado)
-            if hallazgo:
-                forma, fragmento = hallazgo
-                coincidencias.append(
-                    CoincidenciaPublicacion(publicacion, radicado, forma, donde="titulo o resumen", fragmento=fragmento)
-                )
-                pendientes.remove(radicado)
+        hallazgos: list[tuple[str, str, str, str]] = []  # (radicado, forma, dónde, fragmento)
 
+        def buscar_en(texto: str, donde: str) -> None:
+            for radicado in list(pendientes):
+                hallazgo = buscar_radicado(texto, radicado)
+                if hallazgo:
+                    hallazgos.append((radicado, hallazgo[0], donde, hallazgo[1]))
+                    pendientes.remove(radicado)
+
+        buscar_en(f"{publicacion.titulo}\n{publicacion.resumen}", "titulo o resumen")
         analizada = not publicacion.documentos
-        if pendientes and self._opciones.analizar_pdf and publicacion.documentos:
-            for documento in publicacion.documentos[: self._opciones.max_documentos_por_publicacion]:
-                try:
-                    datos = self._fuente.descargar(documento.url)
-                except ErrorFuente as exc:
-                    log.warning("No se pudo descargar %s: %s", documento.url, exc)
-                    continue
-                if len(datos) > self._opciones.max_bytes_pdf:
-                    log.warning("Documento demasiado grande (%d bytes), se omite: %s", len(datos), documento.url)
-                    continue
-                texto = self._extractor(datos)
-                if not texto.strip():
-                    continue
+
+        if pendientes and self._opciones.analizar_detalle and publicacion.url_detalle and not publicacion.documentos:
+            try:
+                detalle = self._fuente.obtener_detalle(publicacion.url_detalle)
+            except RespuestaInesperada:
+                raise
+            except ErrorFuente as exc:
+                log.warning("No se pudo abrir el detalle de la publicación %s: %s", publicacion.id_publicacion, exc)
+            else:
                 analizada = True
-                for radicado in list(pendientes):
-                    hallazgo = buscar_radicado(texto, radicado)
-                    if hallazgo:
-                        forma, fragmento = hallazgo
-                        coincidencias.append(
-                            CoincidenciaPublicacion(
-                                publicacion, radicado, forma, donde=f"documento: {documento.etiqueta}", fragmento=fragmento
-                            )
-                        )
-                        pendientes.remove(radicado)
-                if not pendientes:
-                    break
-        return replace(publicacion, analizada=analizada), coincidencias
+                encontrados: list[DocumentoPublicado] = []
+                for documento in detalle.documentos:
+                    for radicado in list(pendientes):
+                        hallazgo = buscar_radicado(documento.etiqueta, radicado)
+                        if hallazgo:
+                            # El fragmento es el nombre del archivo tal cual: es lo que la persona va a buscar.
+                            hallazgos.append((radicado, hallazgo[0], f"documento: {documento.etiqueta}", documento.etiqueta))
+                            pendientes.remove(radicado)
+                            if documento not in encontrados:
+                                encontrados.append(documento)
+                buscar_en(detalle.texto, "detalle de la publicación")
+                generales = [d for d in detalle.documentos if d not in encontrados and _es_documento_general(d)]
+                otros = [d for d in detalle.documentos if d not in encontrados and d not in generales]
+                # Se guardan los documentos donde apareció algún radicado y los que listan varios procesos.
+                guardados = (encontrados + generales)[:MAX_DOCUMENTOS_GUARDADOS]
+                publicacion = replace(publicacion, documentos=tuple(guardados))
+                candidatos = generales + otros
+                if pendientes and self._opciones.analizar_pdf:
+                    self._buscar_en_pdf(candidatos, pendientes, hallazgos)
+        elif pendientes and self._opciones.analizar_pdf and publicacion.documentos:
+            analizada = self._buscar_en_pdf(list(publicacion.documentos), pendientes, hallazgos) or analizada
+
+        publicacion = replace(publicacion, analizada=analizada)
+        coincidencias = [
+            CoincidenciaPublicacion(publicacion, radicado, forma, donde=donde, fragmento=fragmento)
+            for radicado, forma, donde, fragmento in hallazgos
+        ]
+        return publicacion, coincidencias
+
+    def _buscar_en_pdf(
+        self, documentos: list[DocumentoPublicado], pendientes: list[str], hallazgos: list[tuple[str, str, str, str]]
+    ) -> bool:
+        """Descarga hasta `max_documentos_por_publicacion` PDF y busca los radicados pendientes. True si leyó alguno."""
+        leido = False
+        for documento in documentos[: self._opciones.max_documentos_por_publicacion]:
+            try:
+                datos = self._fuente.descargar(documento.url)
+            except ErrorFuente as exc:
+                log.warning("No se pudo descargar %s: %s", documento.url, exc)
+                continue
+            if len(datos) > self._opciones.max_bytes_pdf:
+                log.warning("Documento demasiado grande (%d bytes), se omite: %s", len(datos), documento.url)
+                continue
+            texto = self._extractor(datos)
+            if not texto.strip():
+                continue
+            leido = True
+            for radicado in list(pendientes):
+                hallazgo = buscar_radicado(texto, radicado)
+                if hallazgo:
+                    hallazgos.append((radicado, hallazgo[0], f"documento: {documento.etiqueta}", hallazgo[1]))
+                    pendientes.remove(radicado)
+            if not pendientes:
+                break
+        return leido
 
     def _notificar(
         self, coincidencias: list[CoincidenciaPublicacion], vigilados: list[ProcesoVigilado], momento: datetime

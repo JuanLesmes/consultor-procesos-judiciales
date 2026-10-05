@@ -17,6 +17,7 @@ no ser bloqueado.
 | Documento | Contenido |
 | --- | --- |
 | [docs/DESPLIEGUE.md](docs/DESPLIEGUE.md) | Paso a paso para dejarlo en un VPS con HTTPS, despliegue automático y monitor |
+| [docs/GUIA_DE_PRUEBAS.md](docs/GUIA_DE_PRUEBAS.md) | Qué hace, cómo probarlo y casos de prueba con su resultado esperado |
 | [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md) | Diseño: capas, flujo de una verificación, cortesía, seguridad, datos |
 | [docs/FUENTES.md](docs/FUENTES.md) | Sitios oficiales de consulta y qué se puede automatizar en cada uno |
 
@@ -162,7 +163,8 @@ consultor-procesos respaldar --destino respaldos
 ```
 
 Otros: `listar`, `quitar`, `autos`, `publicaciones --revisar`, `vigilar` (solo la vigilancia, sin
-interfaz), `crear-usuario`, `iniciar-config`. La primera verificación de un radicado registra la
+interfaz), `crear-usuario`, `iniciar-config` y `simular-novedad` (para pruebas: olvida localmente las
+últimas actuaciones de un radicado para que la próxima verificación las traiga como nuevas). La primera verificación de un radicado registra la
 **línea base** (lo que ya existía) sin notificar; desde la segunda solo se avisa lo nuevo.
 
 ## Cómo detecta los autos
@@ -180,8 +182,9 @@ mayúsculas) y busca la palabra completa `AUTO` o `AUTOS` ("AUTOMOTOR" o "AUTORI
   incluye en la notificación. Los PDF se guardan una sola vez en `datos/documentos/`.
 - Cada despacho publica estados, avisos, traslados y autos masivos en **Publicaciones Procesales**.
   El programa revisa cada despacho a lo sumo una vez cada 20 horas, busca sus radicados en el título,
-  el resumen y dentro de los PDF (radicado completo, 21 dígitos o año-consecutivo) y muestra cada
-  coincidencia en la pestaña **Estados y avisos**.
+  el resumen, la página de detalle de cada publicación (muchos juzgados publican allí un PDF por auto,
+  con el radicado corto en el nombre) y dentro de los PDF (radicado completo, 21 dígitos o
+  año-consecutivo), y muestra cada coincidencia en la pestaña **Estados y avisos**.
 
 ## Cómo evita sobrecargar el portal
 
