@@ -1,0 +1,863 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consultor de Procesos</title>
+<style>
+  :root {
+    --fondo: #f4f5f7; --papel: #ffffff; --tinta: #1c2430; --tinta-suave: #5b6675; --linea: #e1e5eb;
+    --primario: #1f4e79; --primario-suave: #e8f0f8; --ambar: #b7791f; --ambar-suave: #fdf3dd;
+    --verde: #2e7d4f; --verde-suave: #e6f4ec; --rojo: #b3261e; --rojo-suave: #fbe9e7; --sombra: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.1);
+    --radio: 10px; --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--tinta); background: var(--fondo); }
+  h1, h2, h3 { margin: 0; font-weight: 650; }
+  h1 { font-size: 1.15rem; } h2 { font-size: 1rem; } h3 { font-size: .95rem; }
+  a { color: var(--primario); }
+  button { font: inherit; }
+  .barra { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; justify-content: space-between; padding: 12px 20px; background: var(--papel); border-bottom: 1px solid var(--linea); position: sticky; top: 0; z-index: 5; }
+  .marca { display: flex; align-items: center; gap: 12px; }
+  .logo { width: 38px; height: 38px; border-radius: 9px; background: var(--primario); color: #fff; display: grid; place-items: center; font-size: 20px; }
+  .sub { margin: 0; color: var(--tinta-suave); font-size: .82rem; }
+  .estado-barra { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--linea); background: var(--papel); color: var(--tinta-suave); font-size: .82rem; cursor: default; }
+  .chip.activo { background: var(--primario); border-color: var(--primario); color: #fff; }
+  .chip.ok { background: var(--verde-suave); color: var(--verde); border-color: transparent; }
+  .chip.alerta { background: var(--ambar-suave); color: var(--ambar); border-color: transparent; }
+  .chip.error { background: var(--rojo-suave); color: var(--rojo); border-color: transparent; }
+  .chip.boton { cursor: pointer; }
+  .chip .contador { background: rgba(255,255,255,.25); color: inherit; }
+  .chip:not(.activo) .contador { background: var(--primario-suave); color: var(--primario); }
+  .punto { width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block; }
+  .btn { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--linea); background: var(--papel); color: var(--tinta); cursor: pointer; font-size: .88rem; text-decoration: none; display: inline-block; line-height: 1.3; }
+  .btn:hover { border-color: #c5ccd6; background: #fafbfc; }
+  .btn.primario { background: var(--primario); color: #fff; border-color: var(--primario); }
+  .btn.primario:hover { background: #193f62; }
+  .btn.peligro { color: var(--rojo); }
+  .btn.sutil { border-color: transparent; background: transparent; }
+  .btn.pequeno { padding: 4px 9px; font-size: .8rem; }
+  .btn[disabled] { opacity: .55; cursor: wait; }
+  .nav { display: flex; gap: 4px; padding: 8px 20px 0; max-width: 1400px; margin: 0 auto; }
+  .pestana { padding: 8px 14px; border-radius: 8px 8px 0 0; text-decoration: none; color: var(--tinta-suave); font-weight: 600; font-size: .92rem; border: 1px solid transparent; border-bottom: 0; }
+  .pestana.activa { background: var(--papel); color: var(--primario); border-color: var(--linea); }
+  .contenido { padding: 16px 20px 40px; max-width: 1400px; margin: 0 auto; }
+  .doble { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 20px; }
+  @media (max-width: 960px) { .doble { grid-template-columns: 1fr; } }
+  .tarjeta { background: var(--papel); border: 1px solid var(--linea); border-radius: var(--radio); padding: 16px; box-shadow: var(--sombra); margin-bottom: 16px; }
+  .tarjeta h2 { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .contador { font-size: .75rem; background: var(--primario-suave); color: var(--primario); padding: 2px 8px; border-radius: 999px; }
+  label { display: block; font-size: .82rem; color: var(--tinta-suave); margin-bottom: 8px; }
+  input, select { width: 100%; margin-top: 4px; padding: 8px 10px; border: 1px solid var(--linea); border-radius: 8px; font: inherit; background: #fff; color: var(--tinta); }
+  input:focus, select:focus { outline: 2px solid var(--primario-suave); border-color: var(--primario); }
+  .fila { display: flex; gap: 8px; align-items: flex-end; }
+  .fila > label, .fila > input { flex: 1; }
+  .ayuda { margin: 0 0 8px; color: var(--tinta-suave); font-size: .82rem; }
+  .radicado { font-family: var(--mono); font-size: .85rem; letter-spacing: .2px; }
+  .meta { color: var(--tinta-suave); font-size: .78rem; }
+  .acciones { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+  .insignia { display: inline-block; font-size: .72rem; font-weight: 700; letter-spacing: .3px; padding: 2px 8px; border-radius: 6px; text-transform: uppercase; }
+  .insignia.auto { background: var(--ambar-suave); color: var(--ambar); }
+  .insignia.otra { background: var(--primario-suave); color: var(--primario); }
+  .insignia.base { background: #eef0f3; color: var(--tinta-suave); }
+  .insignia.pendiente { background: var(--rojo-suave); color: var(--rojo); }
+  .insignia.publicacion { background: var(--verde-suave); color: var(--verde); }
+  .encabezado-feed { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .filtros { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .filtros select { width: auto; margin: 0; padding: 5px 8px; font-size: .82rem; }
+  .aviso { padding: 10px 14px; border-radius: 8px; margin: 0 auto 12px; font-size: .88rem; background: var(--primario-suave); color: var(--primario); max-width: 1360px; }
+  .aviso.error { background: var(--rojo-suave); color: var(--rojo); }
+  .aviso.ok { background: var(--verde-suave); color: var(--verde); }
+  .oculto { display: none !important; }
+  .feed { display: grid; gap: 12px; }
+  .procesos { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+  .proceso { background: var(--papel); border: 1px solid var(--linea); border-left: 4px solid var(--linea); border-radius: var(--radio); padding: 14px 16px; box-shadow: var(--sombra); display: grid; gap: 6px; cursor: pointer; }
+  .proceso:hover { border-color: #c5ccd6; border-left-color: var(--primario); }
+  .proceso.con-autos { border-left-color: var(--ambar); }
+  .proceso .titulo { font-weight: 650; font-size: 1rem; }
+  .proceso .cabecera { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
+  .proceso .pie { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; margin-top: 4px; }
+  .novedad { background: var(--papel); border: 1px solid var(--linea); border-radius: var(--radio); padding: 14px 16px; box-shadow: var(--sombra); display: grid; gap: 8px; border-left: 4px solid var(--linea); }
+  .novedad.auto { border-left-color: var(--ambar); }
+  .novedad.publicacion { border-left-color: var(--verde); }
+  .novedad.revisada { opacity: .72; }
+  .novedad .cabecera { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+  .novedad .titulo { font-weight: 600; }
+  .novedad .texto { white-space: pre-wrap; }
+  .novedad .pie { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; }
+  .fragmento { font-family: var(--mono); font-size: .8rem; background: #f7f8fa; border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; word-break: break-word; }
+  .vacio { text-align: center; color: var(--tinta-suave); padding: 40px 10px; }
+  .docs { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+  .docs li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; padding: 8px 10px; border: 1px dashed var(--linea); border-radius: 8px; font-size: .88rem; }
+  .migas { font-size: .88rem; margin-bottom: 10px; }
+  .ficha { display: grid; gap: 10px; }
+  .ficha .cabecera { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: flex-start; }
+  .ficha h2 { font-size: 1.2rem; margin: 0; }
+  .ficha dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; font-size: .88rem; }
+  .ficha dt { color: var(--tinta-suave); }
+  .ficha dd { margin: 0; }
+  dialog { border: 0; border-radius: 12px; padding: 0; width: min(960px, 96vw); max-height: 92vh; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+  dialog::backdrop { background: rgba(16,24,40,.45); }
+  .dialogo-cuerpo { padding: 18px 20px; display: grid; gap: 12px; }
+  .dialogo-cabecera { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+  .visor { width: 100%; height: 62vh; border: 1px solid var(--linea); border-radius: 8px; background: #eee; }
+  .toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 20; }
+  .toast { background: var(--tinta); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: .88rem; box-shadow: var(--sombra); max-width: 360px; }
+  .toast.error { background: var(--rojo); }
+  .toast.ok { background: var(--verde); }
+  .consulta-resultado { font-size: .88rem; display: grid; gap: 8px; }
+  .cargando { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--linea); border-top-color: var(--primario); border-radius: 50%; animation: giro .8s linear infinite; vertical-align: middle; }
+  @keyframes giro { to { transform: rotate(360deg); } }
+  table.compacta { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  table.compacta td, table.compacta th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--linea); vertical-align: top; }
+</style>
+</head>
+<body>
+<header class="barra">
+  <div class="marca">
+    <div class="logo" aria-hidden="true">&#9878;</div>
+    <div>
+      <h1>Consultor de Procesos</h1>
+      <p class="sub" id="sub-horario">Vigilancia cortés de radicados · Rama Judicial de Colombia</p>
+    </div>
+  </div>
+  <div class="estado-barra">
+    <span id="chip-vigilancia" class="chip"><span class="punto"></span> Vigilancia: cargando…</span>
+    <span id="chip-presupuesto" class="chip" title="Solicitudes hechas hoy a la Rama Judicial">Solicitudes hoy: …</span>
+    <button id="btn-verificar" class="btn primario" type="button" title="Consultar ahora todos los radicados, sin esperar la hora programada">Verificar ahora</button>
+    <button id="btn-vigilancia" class="btn" type="button">Pausar vigilancia</button>
+    <button id="btn-notif" class="btn sutil" type="button" title="Permitir avisos del navegador cuando aparezca un auto">&#128276;</button>
+  </div>
+</header>
+
+<nav class="nav" aria-label="Secciones">
+  <a class="pestana activa" href="#/procesos" data-vista="procesos">Procesos <span id="n-procesos" class="contador">0</span></a>
+  <a class="pestana" href="#/novedades" data-vista="novedades">Novedades <span id="n-pendientes" class="contador" title="Actuaciones pendientes de revisar">0</span></a>
+</nav>
+
+<main class="contenido">
+  <div id="aviso-verificacion" class="aviso oculto"></div>
+
+  <!-- Nivel 1: lista de procesos -->
+  <section id="vista-procesos" class="vista">
+    <div class="doble">
+      <aside>
+        <section class="tarjeta">
+          <h2>Agregar proceso</h2>
+          <form id="form-agregar" autocomplete="off">
+            <label>Número de radicación (23 dígitos)
+              <input id="in-radicado" required inputmode="numeric" placeholder="11001400300120240012345" pattern="[0-9 .\-]{23,40}">
+            </label>
+            <label>Nombre o alias (opcional)
+              <input id="in-alias" placeholder="Ej.: Ejecutivo Pérez vs. Banco">
+            </label>
+            <button class="btn primario" type="submit">Vigilar este proceso</button>
+          </form>
+          <p class="ayuda" style="margin-top:10px">Al agregarlo se lee su ficha y todo su historial (línea base). Desde entonces se avisa solo de lo nuevo.</p>
+        </section>
+
+        <section class="tarjeta">
+          <h2>Consulta puntual</h2>
+          <p class="ayuda">Revisa un proceso una sola vez, sin guardarlo ni vigilarlo.</p>
+          <form id="form-consultar" class="fila" autocomplete="off">
+            <input id="in-consulta" required inputmode="numeric" placeholder="23 dígitos" pattern="[0-9 .\-]{23,40}">
+            <button class="btn" type="submit">Consultar</button>
+          </form>
+          <div id="resultado-consulta" class="consulta-resultado" style="margin-top:10px"></div>
+        </section>
+      </aside>
+
+      <div>
+        <div class="encabezado-feed">
+          <h2>Procesos vigilados</h2>
+          <span class="meta">Pulse un proceso para ver su ficha y todo su historial.</span>
+        </div>
+        <div id="tarjetas-procesos" class="procesos"><div class="vacio">Cargando…</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Nivel 2: un proceso con su historial -->
+  <section id="vista-proceso" class="vista oculto">
+    <div class="migas"><a href="#/procesos">&larr; Todos los procesos</a></div>
+    <div id="ficha-proceso" class="tarjeta ficha"><div class="vacio">Cargando…</div></div>
+    <div class="encabezado-feed">
+      <div class="filtros" id="subpestanas">
+        <button class="chip boton activo" data-sub="historial" type="button">Historial <span id="n-historial" class="contador">0</span></button>
+        <button class="chip boton" data-sub="autos" type="button">Autos <span id="n-autos" class="contador">0</span></button>
+        <button class="chip boton" data-sub="publicaciones" type="button" id="sub-publicaciones">Estados y avisos <span id="n-pub-proceso" class="contador">0</span></button>
+        <button class="chip boton" data-sub="verificaciones" type="button">Verificaciones</button>
+      </div>
+      <button class="btn pequeno oculto" id="btn-revisar-despacho" type="button" title="Consultar ahora los micrositios del despacho de este proceso">Revisar despacho ahora</button>
+    </div>
+    <div id="lista-proceso" class="feed"></div>
+  </section>
+
+  <!-- Novedades de todos los procesos -->
+  <section id="vista-novedades" class="vista oculto">
+    <div class="encabezado-feed">
+      <h2>Novedades</h2>
+      <div class="filtros">
+        <button class="chip boton activo" data-filtro="todas" type="button">Todas</button>
+        <button class="chip boton" data-filtro="autos" type="button">Solo autos</button>
+        <button class="chip boton" data-filtro="pendientes" type="button">Pendientes</button>
+        <button class="chip boton" data-filtro="publicaciones" type="button" id="chip-publicaciones">Estados y avisos <span id="n-publicaciones" class="contador">0</span></button>
+        <button class="btn pequeno oculto" id="btn-revisar-publicaciones" type="button" title="Consultar ahora los micrositios de los despachos">Revisar despachos ahora</button>
+        <select id="filtro-radicado" aria-label="Filtrar por proceso"><option value="">Todos los procesos</option></select>
+      </div>
+    </div>
+    <div id="feed" class="feed"><div class="vacio">Cargando…</div></div>
+  </section>
+</main>
+
+<dialog id="dialogo" aria-label="Detalle de la actuación">
+  <div class="dialogo-cuerpo">
+    <div class="dialogo-cabecera">
+      <div id="dialogo-titulo"></div>
+      <button class="btn sutil" type="button" id="btn-cerrar-dialogo" aria-label="Cerrar">&#10005;</button>
+    </div>
+    <div id="dialogo-contenido"></div>
+    <div id="dialogo-documentos"></div>
+    <iframe id="visor" class="visor oculto" title="Vista previa del documento"></iframe>
+  </div>
+</dialog>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<script>
+(() => {
+  const $ = (sel, raiz = document) => raiz.querySelector(sel);
+  const estadoUI = {
+    vista: "procesos", radicadoActual: null, proceso: null, subpestana: "historial",
+    filtro: "todas", radicadoFiltro: "", estado: null, verificacionEnCurso: false, autosPendientesPrevios: null, temporizador: null,
+  };
+
+  // --- utilidades ---------------------------------------------------------------------------
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fecha = (iso) => (iso ? String(iso).slice(0, 10) : "sin fecha");
+  const fechaHora = (iso) => (iso ? String(iso).replace("T", " ").slice(0, 16) : "nunca");
+  const hora = (iso) => (iso ? String(iso).slice(11, 16) : "");
+  const enlaceProceso = (n) => `<a href="#/proceso/${esc(n.radicado)}" title="Abrir el proceso">${n.alias ? `${esc(n.alias)} <span class="radicado">${esc(n.radicado)}</span>` : `<span class="radicado">${esc(n.radicado)}</span>`}</a>`;
+
+  function toast(mensaje, tipo = "") {
+    const el = document.createElement("div");
+    el.className = `toast ${tipo}`;
+    el.textContent = mensaje;
+    $("#toasts").appendChild(el);
+    setTimeout(() => el.remove(), 6000);
+  }
+
+  async function api(ruta, opciones = {}) {
+    const respuesta = await fetch(ruta, { headers: { "Content-Type": "application/json", ...(opciones.headers || {}) }, ...opciones });
+    const tipo = respuesta.headers.get("Content-Type") || "";
+    const datos = tipo.includes("json") ? await respuesta.json() : await respuesta.text();
+    if (!respuesta.ok) throw new Error((datos && datos.error) || `Error ${respuesta.status}`);
+    return datos;
+  }
+
+  // --- navegación por niveles ---------------------------------------------------------------
+  function enrutar() {
+    const destino = location.hash || "#/procesos";
+    const proceso = destino.match(/^#\/proceso\/(\d{23})/);
+    if (proceso) { estadoUI.vista = "proceso"; estadoUI.radicadoActual = proceso[1]; }
+    else if (destino.startsWith("#/novedades")) { estadoUI.vista = "novedades"; }
+    else { estadoUI.vista = "procesos"; }
+    document.querySelectorAll(".vista").forEach((v) => v.classList.toggle("oculto", v.id !== `vista-${estadoUI.vista}`));
+    const pestanaActiva = estadoUI.vista === "proceso" ? "procesos" : estadoUI.vista;
+    document.querySelectorAll(".pestana").forEach((p) => p.classList.toggle("activa", p.dataset.vista === pestanaActiva));
+    window.scrollTo({ top: 0 });
+    refrescarVista();
+  }
+
+  async function refrescarVista() {
+    if (estadoUI.vista === "proceso") return cargarProceso();
+    if (estadoUI.vista === "novedades") return cargarFeed();
+    if (estadoUI.estado) pintarProcesos(estadoUI.estado.vigilados);
+  }
+
+  // --- estado general -----------------------------------------------------------------------
+  async function cargarEstado() {
+    let estado;
+    try {
+      estado = await api("/api/estado");
+    } catch (e) {
+      $("#chip-vigilancia").className = "chip error";
+      $("#chip-vigilancia").innerHTML = '<span class="punto"></span> Sin conexión con el servidor local';
+      programarActualizacion(10);
+      return;
+    }
+    estadoUI.estado = estado;
+    pintarBarra(estado);
+    pintarProcesos(estado.vigilados);
+    pintarSelectorRadicados(estado.vigilados);
+    pintarAvisoVerificacion(estado.verificacion);
+
+    const enCurso = estado.verificacion.en_curso;
+    if (estadoUI.verificacionEnCurso && !enCurso) {
+      await refrescarVista();
+      const resumen = estado.verificacion.resumen || [];
+      const autos = resumen.filter((r) => !r.linea_base).reduce((s, r) => s + r.autos, 0);
+      const nuevas = resumen.filter((r) => !r.linea_base).reduce((s, r) => s + r.novedades, 0);
+      if (estado.verificacion.error) toast(`La verificación falló: ${estado.verificacion.error}`, "error");
+      else if (resumen.some((r) => r.linea_base)) toast("Línea base registrada: ya puede ver el historial del proceso.", "ok");
+      else toast(autos ? `Verificación terminada: ${autos} auto(s) nuevo(s).` : `Verificación terminada: ${nuevas} actuación(es) nueva(s).`, autos ? "ok" : "");
+    }
+    estadoUI.verificacionEnCurso = enCurso;
+
+    const autosPend = estado.pendientes.autos;
+    if (estadoUI.autosPendientesPrevios !== null && autosPend > estadoUI.autosPendientesPrevios) {
+      notificarNavegador(`${autosPend - estadoUI.autosPendientesPrevios} auto(s) nuevo(s) por revisar`, "Abra Consultor de Procesos para ver el detalle.");
+    }
+    estadoUI.autosPendientesPrevios = autosPend;
+    programarActualizacion(enCurso ? 3 : estado.segundos_actualizacion || 30);
+  }
+
+  function programarActualizacion(segundos) {
+    clearTimeout(estadoUI.temporizador);
+    estadoUI.temporizador = setTimeout(cargarEstado, Math.max(2, segundos) * 1000);
+  }
+
+  function pintarBarra(estado) {
+    const vig = estado.vigilante || {};
+    const horario = vig.horario;
+    const chip = $("#chip-vigilancia");
+    const boton = $("#btn-vigilancia");
+    const version = estado.version ? `v${estado.version} · ` : "";
+    $("#sub-horario").textContent = version + (horario
+      ? `Verifica ${horario.descripcion} (nada después de las ${horario.hasta})`
+      : "Vigilancia cortés de radicados · Rama Judicial de Colombia");
+    if (!vig.disponible) {
+      chip.className = "chip"; chip.innerHTML = '<span class="punto"></span> Vigilancia no disponible';
+      boton.classList.add("oculto");
+    } else if (vig.activo) {
+      chip.className = "chip ok";
+      chip.innerHTML = `<span class="punto"></span> Vigilancia activa${vig.proxima_ejecucion ? ` · próxima ${fecha(vig.proxima_ejecucion) === fecha(estado.actualizado_en) ? "hoy" : fecha(vig.proxima_ejecucion)} ${hora(vig.proxima_ejecucion)}` : " · verificando"}`;
+      chip.title = horario ? `Horario: ${horario.descripcion}` : "";
+      boton.textContent = "Pausar vigilancia";
+    } else {
+      chip.className = "chip alerta"; chip.innerHTML = '<span class="punto"></span> Vigilancia en pausa';
+      chip.title = "No se consultará nada hasta reanudarla o pulsar «Verificar ahora».";
+      boton.textContent = "Reanudar vigilancia";
+    }
+    const p = estado.presupuesto;
+    const chipP = $("#chip-presupuesto");
+    if (p) {
+      chipP.textContent = `Solicitudes hoy: ${p.usado} / ${p.maximo}`;
+      chipP.className = "chip" + (p.usado >= p.maximo ? " error" : p.usado > p.maximo * 0.8 ? " alerta" : "");
+    } else {
+      chipP.textContent = `Solicitudes en esta sesión: ${estado.fuente.solicitudes_sesion}`;
+    }
+    $("#n-procesos").textContent = estado.vigilados.length;
+    $("#n-pendientes").textContent = estado.pendientes.total + (estado.pendientes.publicaciones || 0);
+    $("#n-pendientes").title = `${estado.pendientes.autos} auto(s) pendiente(s) de ${estado.pendientes.total} actuaciones` + (estado.pendientes.publicaciones ? ` y ${estado.pendientes.publicaciones} publicación(es)` : "");
+    $("#n-publicaciones").textContent = estado.pendientes.publicaciones ?? 0;
+    const pubHabilitado = !!(estado.publicaciones && estado.publicaciones.habilitado);
+    $("#chip-publicaciones").classList.toggle("oculto", !pubHabilitado);
+    $("#sub-publicaciones").classList.toggle("oculto", !pubHabilitado);
+    $("#btn-revisar-publicaciones").classList.toggle("oculto", !pubHabilitado || estadoUI.filtro !== "publicaciones");
+    const btnV = $("#btn-verificar");
+    btnV.disabled = estado.verificacion.en_curso;
+    btnV.innerHTML = estado.verificacion.en_curso ? '<span class="cargando"></span> Verificando…' : "Verificar ahora";
+  }
+
+  function pintarAvisoVerificacion(v) {
+    const aviso = $("#aviso-verificacion");
+    if (v.en_curso) {
+      aviso.className = "aviso";
+      aviso.innerHTML = `<span class="cargando"></span> Verificando (${esc(v.origen)}) desde ${fechaHora(v.iniciado_en)}. Se respeta el ritmo cortés hacia la Rama Judicial, así que puede tardar unos segundos por proceso.`;
+    } else if (v.error) {
+      aviso.className = "aviso error";
+      aviso.textContent = `Última verificación (${fechaHora(v.terminado_en)}) falló: ${v.error}`;
+    } else if ((v.resumen && v.resumen.length) || (v.publicaciones && v.publicaciones.length)) {
+      const resumen = v.resumen || [];
+      const pubs = v.publicaciones || [];
+      const omitidos = resumen.filter((r) => r.estado === "OMITIDO").length + pubs.filter((p) => p.estado === "OMITIDO").length;
+      const solicitudes = resumen.reduce((s, r) => s + r.solicitudes, 0) + pubs.reduce((s, p) => s + p.solicitudes, 0);
+      const coincidencias = pubs.reduce((s, p) => s + p.coincidencias, 0);
+      aviso.className = omitidos ? "aviso error" : "aviso ok";
+      let texto = `Última verificación ${fechaHora(v.terminado_en)}: ${resumen.length} proceso(s)`;
+      if (pubs.length) texto += `, ${pubs.length} despacho(s) revisados en Publicaciones Procesales (${coincidencias} coincidencia(s))`;
+      texto += `, ${solicitudes} solicitud(es)` + (omitidos ? `, ${omitidos} omitido(s) porque la fuente no respondió.` : ".");
+      aviso.textContent = texto;
+    } else {
+      aviso.className = "aviso oculto";
+    }
+  }
+
+  function pintarSelectorRadicados(vigilados) {
+    const filtro = $("#filtro-radicado");
+    const seleccionado = filtro.value;
+    filtro.innerHTML = '<option value="">Todos los procesos</option>' + vigilados.map((v) => `<option value="${esc(v.radicado)}">${esc(v.titulo)}</option>`).join("");
+    filtro.value = vigilados.some((v) => v.radicado === seleccionado) ? seleccionado : "";
+  }
+
+  // --- nivel 1: procesos ------------------------------------------------------------------------
+  function pintarProcesos(vigilados) {
+    const cont = $("#tarjetas-procesos");
+    if (!vigilados.length) {
+      cont.innerHTML = '<div class="vacio">Aún no hay procesos. Agregue el número de radicación a la izquierda.</div>';
+      return;
+    }
+    const orden = vigilados.slice().sort((a, b) => (b.autos_pendientes - a.autos_pendientes) || (b.pendientes - a.pendientes) || String(b.fecha_ultima_actuacion || "").localeCompare(String(a.fecha_ultima_actuacion || "")));
+    cont.innerHTML = orden.map(tarjetaProceso).join("");
+  }
+
+  function tarjetaProceso(v) {
+    const clase = [v.tipo_proceso, v.clase_proceso].filter(Boolean).join(" · ");
+    const insignias = [
+      v.autos_pendientes ? `<span class="insignia auto" title="Autos pendientes de revisar">${v.autos_pendientes} auto(s)</span>` : "",
+      v.pendientes && v.pendientes > v.autos_pendientes ? `<span class="insignia pendiente" title="Actuaciones pendientes de revisar">${v.pendientes - v.autos_pendientes} pendiente(s)</span>` : "",
+      v.inicializado ? "" : '<span class="insignia base">Sin línea base</span>',
+      v.activo ? "" : '<span class="insignia base">Inactivo</span>',
+    ].join(" ");
+    return `
+      <article class="proceso ${v.autos_pendientes ? "con-autos" : ""}" data-radicado="${esc(v.radicado)}" title="Abrir el proceso">
+        <div class="cabecera"><div class="titulo">${esc(v.titulo)}</div><div class="acciones">${insignias}</div></div>
+        <div class="radicado">${esc(v.radicado)}</div>
+        <div class="meta">${esc(v.despacho || "Despacho: se conocerá en la primera verificación")}</div>
+        ${clase ? `<div class="meta">${esc(clase)}</div>` : ""}
+        ${v.alias && v.sujetos ? `<div class="meta">${esc(v.sujetos)}</div>` : ""}
+        <div class="pie">
+          <span class="meta">Última actuación ${fecha(v.fecha_ultima_actuacion)} · verificado ${fechaHora(v.ultima_verificacion)}</span>
+          <div class="acciones">
+            <button class="btn pequeno" type="button" data-accion="verificar-proceso" data-radicado="${esc(v.radicado)}">Verificar</button>
+            <a class="btn pequeno primario" href="#/proceso/${esc(v.radicado)}">Abrir</a>
+          </div>
+        </div>
+      </article>`;
+  }
+
+  // --- nivel 2: un proceso ---------------------------------------------------------------------
+  async function cargarProceso() {
+    const radicado = estadoUI.radicadoActual;
+    let datos;
+    try {
+      datos = await api(`/api/procesos/${radicado}`);
+    } catch (e) {
+      $("#ficha-proceso").innerHTML = `<div class="vacio">${esc(e.message)}<br><a href="#/procesos">Volver a los procesos</a></div>`;
+      $("#lista-proceso").innerHTML = "";
+      return;
+    }
+    estadoUI.proceso = datos;
+    pintarFicha(datos.proceso);
+    $("#n-historial").textContent = datos.actuaciones.length;
+    $("#n-autos").textContent = datos.actuaciones.filter((n) => n.es_auto).length;
+    $("#n-pub-proceso").textContent = datos.publicaciones.length;
+    pintarListaProceso();
+  }
+
+  function pintarFicha(p) {
+    const filas = [
+      ["Despacho", p.despacho],
+      ["Sujetos procesales", p.sujetos],
+      ["Tipo / clase", [p.tipo_proceso, p.clase_proceso].filter(Boolean).join(" · ")],
+      ["Ponente", p.ponente],
+      ["Departamento", p.departamento],
+      ["Radicado el", p.fecha_proceso ? fecha(p.fecha_proceso) : ""],
+      ["Última actuación", p.fecha_ultima_actuacion ? fecha(p.fecha_ultima_actuacion) : ""],
+      ["Última verificación", p.ultima_verificacion ? fechaHora(p.ultima_verificacion) : "todavía no"],
+      ["Despachos vigilados en Publicaciones Procesales", (p.despachos || []).join(", ")],
+    ].filter(([, valor]) => valor);
+    const insignias = [
+      p.autos_pendientes ? `<span class="insignia auto">${p.autos_pendientes} auto(s) por revisar</span>` : "",
+      p.inicializado ? "" : '<span class="insignia base">Línea base pendiente: pulse «Verificar este proceso»</span>',
+    ].join(" ");
+    $("#ficha-proceso").innerHTML = `
+      <div class="cabecera">
+        <div>
+          <h2>${esc(p.titulo)} <button class="btn sutil pequeno" type="button" data-accion="renombrar" data-radicado="${esc(p.radicado)}" title="Cambiar el nombre con el que se muestra">&#9998;</button></h2>
+          <div class="radicado">${esc(p.radicado)} <button class="btn sutil pequeno" type="button" data-accion="copiar" data-radicado="${esc(p.radicado)}" title="Copiar el radicado">&#128203;</button></div>
+          ${p.alias && p.sujetos ? `<div class="meta">${esc(p.sujetos)}</div>` : ""}
+          <div style="margin-top:6px">${insignias}</div>
+        </div>
+        <div class="acciones">
+          <button class="btn primario" type="button" data-accion="verificar-proceso" data-radicado="${esc(p.radicado)}">Verificar este proceso</button>
+          <button class="btn" type="button" data-accion="portal" data-radicado="${esc(p.radicado)}" title="Copia el radicado y abre el portal de la Rama Judicial">Portal</button>
+          <button class="btn peligro" type="button" data-accion="quitar-proceso" data-radicado="${esc(p.radicado)}">Quitar</button>
+        </div>
+      </div>
+      <dl>${filas.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}${p.enlaces?.origen_actuaciones ? `
+        <dt>Origen de los datos</dt>
+        <dd>Servicio oficial de la Consulta de Procesos Nacional Unificada, en bruto:
+          <a href="${esc(p.enlaces.origen_ficha)}" target="_blank" rel="noopener">ficha</a> ·
+          <a href="${esc(p.enlaces.origen_actuaciones)}" target="_blank" rel="noopener">actuaciones</a>
+          <span class="meta">(se abren en la Rama Judicial; el portal no tiene una página propia por proceso)</span></dd>` : ""}
+      </dl>`;
+  }
+
+  function pintarListaProceso() {
+    const datos = estadoUI.proceso;
+    const cont = $("#lista-proceso");
+    const sub = estadoUI.subpestana;
+    $("#btn-revisar-despacho").classList.toggle("oculto", sub !== "publicaciones" || !(estadoUI.estado?.publicaciones?.habilitado));
+    if (!datos) { cont.innerHTML = ""; return; }
+    if (sub === "historial" || sub === "autos") {
+      const lista = sub === "autos" ? datos.actuaciones.filter((n) => n.es_auto) : datos.actuaciones;
+      if (!lista.length) {
+        cont.innerHTML = datos.proceso.inicializado
+          ? `<div class="vacio">${sub === "autos" ? "No hay autos registrados en este proceso." : "No hay actuaciones registradas."}</div>`
+          : '<div class="vacio">Todavía no se ha leído el historial. Pulse «Verificar este proceso» para registrar la línea base.</div>';
+        return;
+      }
+      cont.innerHTML = lista.map((n) => tarjetaNovedad(n, false)).join("");
+    } else if (sub === "publicaciones") {
+      cont.innerHTML = datos.publicaciones.length
+        ? datos.publicaciones.map((c) => tarjetaPublicacion(c, false)).join("")
+        : '<div class="vacio">Ningún estado, aviso o traslado publicado por el despacho menciona este radicado todavía.<br><small>Los micrositios se revisan una vez al día; pulse «Revisar despacho ahora» para forzarlo.</small></div>';
+    } else {
+      cont.innerHTML = datos.verificaciones.length
+        ? `<div class="tarjeta"><table class="compacta"><tr><th>Momento</th><th>Estado</th><th>Nuevas</th><th>Autos</th><th>Solic.</th><th>Detalle</th></tr>${datos.verificaciones.map((f) => `<tr><td>${fechaHora(f.momento)}</td><td>${esc(f.estado)}</td><td>${f.novedades}</td><td>${f.autos}</td><td>${f.solicitudes}</td><td>${esc(f.mensaje)}</td></tr>`).join("")}</table></div>`
+        : '<div class="vacio">Este proceso todavía no se ha verificado.</div>';
+    }
+  }
+
+  // --- tarjetas ------------------------------------------------------------------------------
+  function tarjetaNovedad(n, conProceso = true) {
+    const docs = n.documentos || [];
+    const abrir = n.con_documentos
+      ? `<a class="btn pequeno primario" href="${esc(n.enlaces?.documento || `/documento/${n.id_registro}`)}" target="_blank" rel="noopener" title="Abre el documento publicado por el despacho en una pestaña nueva">Abrir ${n.es_auto ? "auto" : "documento"}</a>`
+      : "";
+    return `
+      <article class="novedad ${n.es_auto ? "auto" : ""} ${n.revisada ? "revisada" : ""}" data-id="${n.id_registro}">
+        <div class="cabecera">
+          <div>
+            <span class="insignia ${n.es_auto ? "auto" : "otra"}">${n.es_auto ? "Auto" : "Actuación"}</span>
+            ${n.revisada ? "" : '<span class="insignia pendiente">Pendiente</span>'}
+            <span class="meta"> ${fecha(n.fecha_actuacion)} · #${n.consecutivo}</span>
+          </div>
+          ${conProceso ? `<div class="meta">${enlaceProceso(n)}</div>` : ""}
+        </div>
+        <div class="titulo">${esc(n.actuacion)}</div>
+        ${n.anotacion ? `<div class="texto">${esc(n.anotacion)}</div>` : ""}
+        <div class="meta">${esc(n.despacho || "Despacho no informado")}${n.con_documentos ? ` · <strong>${docs.length ? docs.length + " documento(s)" : "con documentos"}</strong>` : ""}</div>
+        <div class="pie">
+          <span class="meta">Detectado ${fechaHora(n.visto_en)}</span>
+          <div class="acciones">
+            ${abrir}
+            <button class="btn pequeno" data-accion="detalle" type="button">Detalle</button>
+            <button class="btn pequeno" data-accion="revisada" type="button">${n.revisada ? "Marcar pendiente" : "Marcar revisada"}</button>
+          </div>
+        </div>
+      </article>`;
+  }
+
+  function tarjetaPublicacion(c, conProceso = true) {
+    const p = c.publicacion;
+    const docs = p.documentos || [];
+    return `
+      <article class="novedad publicacion ${c.revisada ? "revisada" : ""}" data-idc="${c.id}">
+        <div class="cabecera">
+          <div>
+            <span class="insignia publicacion">${esc(p.tipo || "Publicación")}</span>
+            ${c.revisada ? "" : '<span class="insignia pendiente">Pendiente</span>'}
+            <span class="meta"> publicado ${fecha(p.fecha_publicacion)}</span>
+          </div>
+          ${conProceso ? `<div class="meta">${enlaceProceso(c)}</div>` : ""}
+        </div>
+        <div class="titulo">${esc(p.titulo)}</div>
+        <div class="meta">${esc(p.despacho || p.despacho_codigo)} · el radicado aparece en: <strong>${esc(c.donde)}</strong>${c.forma === "anio_consecutivo" ? " (coincidencia por año y consecutivo)" : ""}</div>
+        ${c.fragmento ? `<div class="fragmento">…${esc(c.fragmento)}…</div>` : ""}
+        ${docs.length ? `<ul class="docs">${docs.map((d) => `<li><span>&#128196; ${esc(d.etiqueta || "Documento")}</span><span class="acciones"><a class="btn pequeno primario" href="${esc(d.url)}" target="_blank" rel="noopener">Abrir PDF</a></span></li>`).join("")}</ul>` : ""}
+        <div class="pie">
+          <span class="meta">Detectado ${fechaHora(c.visto_en)}</span>
+          <div class="acciones">
+            <a class="btn pequeno" href="${esc(p.url_detalle)}" target="_blank" rel="noopener">Ver publicación</a>
+            <button class="btn pequeno" data-accion="revisada-pub" data-id="${c.id}" data-revisada="${c.revisada}" type="button">${c.revisada ? "Marcar pendiente" : "Marcar revisada"}</button>
+          </div>
+        </div>
+      </article>`;
+  }
+
+  // --- novedades de todos los procesos ---------------------------------------------------------
+  async function cargarFeed() {
+    $("#btn-revisar-publicaciones").classList.toggle("oculto", estadoUI.filtro !== "publicaciones" || !(estadoUI.estado?.publicaciones?.habilitado));
+    if (estadoUI.filtro === "publicaciones") return cargarPublicaciones();
+    const params = new URLSearchParams({ limite: "100" });
+    if (estadoUI.filtro === "autos") params.set("solo_autos", "1");
+    if (estadoUI.filtro === "pendientes") params.set("pendientes", "1");
+    if (estadoUI.radicadoFiltro) params.set("radicado", estadoUI.radicadoFiltro);
+    let novedades;
+    try {
+      novedades = await api(`/api/novedades?${params}`);
+    } catch (e) {
+      $("#feed").innerHTML = `<div class="vacio">No se pudieron cargar las novedades: ${esc(e.message)}</div>`;
+      return;
+    }
+    if (!novedades.length) {
+      $("#feed").innerHTML = '<div class="vacio">No hay actuaciones registradas con este filtro.<br><small>Agregue un proceso y pulse «Verificar ahora».</small></div>';
+      return;
+    }
+    $("#feed").innerHTML = novedades.map((n) => tarjetaNovedad(n, true)).join("");
+  }
+
+  async function cargarPublicaciones() {
+    const params = new URLSearchParams({ limite: "100" });
+    if (estadoUI.radicadoFiltro) params.set("radicado", estadoUI.radicadoFiltro);
+    let coincidencias;
+    try {
+      coincidencias = await api(`/api/publicaciones?${params}`);
+    } catch (e) {
+      $("#feed").innerHTML = `<div class="vacio">${esc(e.message)}</div>`;
+      return;
+    }
+    if (!coincidencias.length) {
+      $("#feed").innerHTML = '<div class="vacio">Ningún estado, aviso o traslado publicado por los despachos menciona sus radicados todavía.<br><small>Se revisan los micrositios una vez al día; pulse «Revisar despachos ahora» para forzarlo.</small></div>';
+      return;
+    }
+    $("#feed").innerHTML = coincidencias.map((c) => tarjetaPublicacion(c, true)).join("");
+  }
+
+  async function alternarRevisadaPublicacion(id, revisadaActual) {
+    try {
+      await api(`/api/publicaciones/${id}/revisada`, { method: "POST", body: JSON.stringify({ revisada: !revisadaActual }) });
+      await Promise.all([refrescarVista(), cargarEstado()]);
+    } catch (e) { toast(e.message, "error"); }
+  }
+
+  async function revisarPublicaciones(radicados) {
+    try {
+      await api("/api/publicaciones/revisar", { method: "POST", body: JSON.stringify(radicados ? { radicados } : {}) });
+      toast("Revisando los micrositios de los despachos… cada consulta pesa cerca de 1 MB, así que puede tardar.");
+      estadoUI.verificacionEnCurso = true;
+      await cargarEstado();
+    } catch (e) { toast(e.message, "error"); }
+  }
+
+  // --- detalle y documentos --------------------------------------------------------------------
+  async function abrirDetalle(id) {
+    const dialogo = $("#dialogo");
+    $("#visor").classList.add("oculto");
+    $("#visor").src = "about:blank";
+    let n;
+    try { n = await api(`/api/novedades/${id}`); } catch (e) { toast(e.message, "error"); return; }
+    $("#dialogo-titulo").innerHTML = `<span class="insignia ${n.es_auto ? "auto" : "otra"}">${n.es_auto ? "Auto" : "Actuación"}</span> <strong>${esc(n.actuacion)}</strong><div class="meta">${enlaceProceso(n)} · ${esc(n.despacho)}</div>`;
+    $("#dialogo-contenido").innerHTML = `
+      ${n.anotacion ? `<p class="texto" style="margin:0;white-space:pre-wrap">${esc(n.anotacion)}</p>` : ""}
+      <table class="compacta">
+        <tr><th>Fecha de la actuación</th><td>${fecha(n.fecha_actuacion)}</td><th>Fecha de registro</th><td>${fecha(n.fecha_registro)}</td></tr>
+        <tr><th>Consecutivo</th><td>#${n.consecutivo}</td><th>Detectado</th><td>${fechaHora(n.visto_en)}</td></tr>
+        ${n.fecha_inicial || n.fecha_final ? `<tr><th>Término inicial</th><td>${fecha(n.fecha_inicial)}</td><th>Término final</th><td>${fecha(n.fecha_final)}</td></tr>` : ""}
+        ${n.coincidencias.length ? `<tr><th>Coincidencias</th><td colspan="3">${esc(n.coincidencias.join(", "))}</td></tr>` : ""}
+      </table>
+      <div class="acciones" style="justify-content:flex-start">
+        ${n.con_documentos ? `<a class="btn pequeno primario" href="${esc(n.enlaces.documento)}" target="_blank" rel="noopener">Abrir ${n.es_auto ? "el auto" : "el documento"} en una pestaña</a>` : ""}
+        <button class="btn pequeno" type="button" data-accion="portal" data-radicado="${esc(n.radicado)}">Abrir portal (copia el radicado)</button>
+        <button class="btn pequeno" type="button" data-accion="revisada-dialogo" data-id="${n.id_registro}" data-revisada="${n.revisada}">${n.revisada ? "Marcar pendiente" : "Marcar revisada"}</button>
+      </div>`;
+    pintarDocumentos(n, n.documentos || [], false);
+    if (!dialogo.open) dialogo.showModal();
+    if (n.con_documentos && !(n.documentos || []).length) cargarDocumentos(n.id_registro, false);
+  }
+
+  function pintarDocumentos(n, docs, cargando) {
+    const cont = $("#dialogo-documentos");
+    if (!n.con_documentos && !docs.length) {
+      cont.innerHTML = '<p class="meta">Esta actuación no tiene documentos publicados en el portal.</p>';
+      return;
+    }
+    cont.innerHTML = `
+      <h3>Documentos ${cargando ? '<span class="cargando"></span>' : `<span class="contador">${docs.length}</span>`}</h3>
+      <ul class="docs">
+        ${docs.map((d) => `
+          <li>
+            <span>&#128196; ${esc(d.nombre || "Documento " + d.id_documento)}${d.fecha ? ` <span class="meta">(${fecha(d.fecha)})</span>` : ""}</span>
+            <span class="acciones">
+              <a class="btn pequeno primario" href="/documento/${n.id_registro}/${d.id_documento}" target="_blank" rel="noopener">Abrir</a>
+              <button class="btn pequeno" type="button" data-accion="ver-doc" data-url="${esc(d.url_vista)}">Ver aquí</button>
+              <a class="btn pequeno" href="${esc(d.url_descarga)}">Descargar</a>
+              <a class="btn pequeno sutil" href="${esc(d.url_fuente)}" target="_blank" rel="noopener" title="Descarga directa desde la Rama Judicial">Fuente</a>
+            </span>
+          </li>`).join("")}
+        ${!docs.length && !cargando ? '<li class="meta">El portal indica que hay documentos pero aún no devuelve la lista. Pruebe «Actualizar lista».</li>' : ""}
+      </ul>
+      <div class="acciones" style="justify-content:flex-start;margin-top:8px">
+        <button class="btn pequeno" type="button" data-accion="recargar-docs" data-id="${n.id_registro}" ${cargando ? "disabled" : ""}>Actualizar lista</button>
+      </div>`;
+  }
+
+  async function cargarDocumentos(id, forzar) {
+    let n;
+    try { n = await api(`/api/novedades/${id}`); } catch (e) { toast(e.message, "error"); return; }
+    pintarDocumentos(n, n.documentos || [], true);
+    try {
+      const docs = await api(`/api/novedades/${id}/documentos${forzar ? "?forzar=1" : ""}`);
+      pintarDocumentos(n, docs, false);
+      if (docs.length === 1) verDocumento(docs[0].url_vista);
+    } catch (e) {
+      pintarDocumentos(n, n.documentos || [], false);
+      toast(e.message, "error");
+    }
+  }
+
+  function verDocumento(url) {
+    const visor = $("#visor");
+    visor.classList.remove("oculto");
+    visor.src = url;
+    visor.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  // --- acciones -------------------------------------------------------------------------------------
+  async function copiar(texto, mensaje) {
+    try { await navigator.clipboard.writeText(texto); toast(mensaje || "Radicado copiado."); }
+    catch (e) { toast("No se pudo copiar: " + texto); }
+  }
+
+  async function abrirPortal(radicado) {
+    await copiar(radicado, "Radicado copiado. Péguelo en el portal y pulse Consultar.");
+    window.open(estadoUI.estado?.portal || "https://consultaprocesos.ramajudicial.gov.co/Procesos/NumeroRadicacion", "_blank", "noopener");
+  }
+
+  async function alternarRevisada(id, revisadaActual) {
+    try {
+      await api(`/api/novedades/${id}/revisada`, { method: "POST", body: JSON.stringify({ revisada: !revisadaActual }) });
+      await Promise.all([refrescarVista(), cargarEstado()]);
+    } catch (e) { toast(e.message, "error"); }
+  }
+
+  async function verificar(radicados) {
+    try {
+      await api("/api/verificar", { method: "POST", body: JSON.stringify(radicados ? { radicados } : {}) });
+      toast(radicados ? "Verificando el proceso…" : "Verificando todos los procesos…");
+      estadoUI.verificacionEnCurso = true;
+      await cargarEstado();
+    } catch (e) { toast(e.message, "error"); }
+  }
+
+  async function quitarProceso(radicado) {
+    if (!confirm(`¿Quitar ${radicado} de la vigilancia? Se borra su historial local.`)) return;
+    try {
+      await api(`/api/vigilados/${radicado}`, { method: "DELETE" });
+      toast("Proceso retirado.");
+      if (estadoUI.vista === "proceso") location.hash = "#/procesos";
+      await cargarEstado();
+      await refrescarVista();
+    } catch (e) { toast(e.message, "error"); }
+  }
+
+  async function renombrar(radicado) {
+    const actual = estadoUI.proceso?.proceso?.alias || "";
+    const alias = prompt("Nombre con el que quiere ver este proceso (vacío para usar los sujetos procesales):", actual);
+    if (alias === null) return;
+    try {
+      await api(`/api/procesos/${radicado}/alias`, { method: "POST", body: JSON.stringify({ alias }) });
+      toast("Nombre actualizado.", "ok");
+      await Promise.all([cargarEstado(), refrescarVista()]);
+    } catch (e) { toast(e.message, "error"); }
+  }
+
+  function notificarNavegador(titulo, cuerpo) {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    try { new Notification(titulo, { body: cuerpo }); } catch (e) { /* sin soporte */ }
+  }
+
+  // --- consulta puntual ------------------------------------------------------------------------------
+  async function consultar(radicado) {
+    const cont = $("#resultado-consulta");
+    cont.innerHTML = '<span class="cargando"></span> Consultando la Rama Judicial con ritmo cortés…';
+    try {
+      const c = await api(`/api/consultar/${encodeURIComponent(radicado)}?max_paginas=3`);
+      const p = c.procesos[0] || {};
+      const d = c.detalles[0] || {};
+      const autos = c.actuaciones.filter((a) => a.es_auto);
+      cont.innerHTML = `
+        <div><strong>${esc(p.despacho || "Despacho no informado")}</strong>${p.departamento ? ` · ${esc(p.departamento)}` : ""}</div>
+        ${p.sujetos ? `<div class="meta">${esc(p.sujetos)}</div>` : ""}
+        ${d.tipo_proceso ? `<div class="meta">${esc(d.tipo_proceso)} · ${esc(d.clase_proceso)}${d.ponente ? ` · Ponente: ${esc(d.ponente)}` : ""}</div>` : ""}
+        <div class="meta">Radicado el ${fecha(p.fecha_proceso)} · Última actuación ${fecha(p.fecha_ultima_actuacion)}</div>
+        <div><span class="insignia auto">${autos.length} auto(s)</span> <span class="insignia otra">${c.resumen.total_actuaciones} actuaciones leídas</span></div>
+        <div class="acciones" style="justify-content:flex-start">
+          <button class="btn pequeno primario" type="button" data-accion="vigilar-consulta" data-radicado="${esc(c.radicado)}">Vigilar este proceso</button>
+          <button class="btn pequeno" type="button" data-accion="portal" data-radicado="${esc(c.radicado)}">Portal</button>
+        </div>
+        <table class="compacta">${c.actuaciones.slice().reverse().slice(0, 15).map((a) => `<tr><td>${fecha(a.fecha_actuacion)}</td><td>${a.es_auto ? '<span class="insignia auto">Auto</span> ' : ""}${esc(a.actuacion)}${a.anotacion ? `<div class="meta">${esc(a.anotacion)}</div>` : ""}</td></tr>`).join("")}</table>
+        ${c.actuaciones.length > 15 ? `<div class="meta">Se muestran las 15 más recientes de ${c.actuaciones.length}.</div>` : ""}`;
+    } catch (e) {
+      cont.innerHTML = `<div class="aviso error">${esc(e.message)}</div>`;
+    }
+  }
+
+  // --- eventos ----------------------------------------------------------------------------------------
+  $("#form-agregar").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const radicado = $("#in-radicado").value.trim();
+    const alias = $("#in-alias").value.trim();
+    try {
+      const creado = await api("/api/vigilados", { method: "POST", body: JSON.stringify({ radicado, alias }) });
+      toast("Proceso agregado. Leyendo su ficha e historial…", "ok");
+      $("#in-radicado").value = ""; $("#in-alias").value = "";
+      location.hash = `#/proceso/${creado.radicado}`;
+      await cargarEstado();
+      verificar([creado.radicado]);
+    } catch (e) { toast(e.message, "error"); }
+  });
+
+  $("#form-consultar").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    consultar($("#in-consulta").value.trim());
+  });
+
+  $("#tarjetas-procesos").addEventListener("click", (ev) => {
+    if (ev.target.closest("button, a")) return;
+    const tarjeta = ev.target.closest("article.proceso");
+    if (tarjeta) location.hash = `#/proceso/${tarjeta.dataset.radicado}`;
+  });
+
+  document.body.addEventListener("click", (ev) => {
+    const boton = ev.target.closest("[data-accion]");
+    if (!boton) return;
+    const tarjeta = boton.closest("article.novedad");
+    const accion = boton.dataset.accion;
+    const radicado = boton.dataset.radicado;
+    if (accion === "detalle" && tarjeta) abrirDetalle(tarjeta.dataset.id);
+    if (accion === "portal") abrirPortal(radicado || tarjeta?.querySelector(".radicado")?.textContent || "");
+    if (accion === "copiar") copiar(radicado);
+    if (accion === "revisada" && tarjeta) alternarRevisada(tarjeta.dataset.id, tarjeta.classList.contains("revisada"));
+    if (accion === "revisada-dialogo") { alternarRevisada(boton.dataset.id, boton.dataset.revisada === "true"); $("#dialogo").close(); }
+    if (accion === "ver-doc") verDocumento(boton.dataset.url);
+    if (accion === "recargar-docs") cargarDocumentos(boton.dataset.id, true);
+    if (accion === "vigilar-consulta") { $("#in-radicado").value = radicado; $("#form-agregar").requestSubmit(); }
+    if (accion === "revisada-pub") alternarRevisadaPublicacion(boton.dataset.id, boton.dataset.revisada === "true");
+    if (accion === "verificar-proceso") verificar([radicado]);
+    if (accion === "quitar-proceso") quitarProceso(radicado);
+    if (accion === "renombrar") renombrar(radicado);
+  });
+
+  document.querySelectorAll("#vista-novedades .chip[data-filtro]").forEach((chip) => chip.addEventListener("click", () => {
+    document.querySelectorAll("#vista-novedades .chip[data-filtro]").forEach((c) => c.classList.remove("activo"));
+    chip.classList.add("activo");
+    estadoUI.filtro = chip.dataset.filtro;
+    cargarFeed();
+  }));
+  document.querySelectorAll("#subpestanas .chip[data-sub]").forEach((chip) => chip.addEventListener("click", () => {
+    document.querySelectorAll("#subpestanas .chip[data-sub]").forEach((c) => c.classList.remove("activo"));
+    chip.classList.add("activo");
+    estadoUI.subpestana = chip.dataset.sub;
+    pintarListaProceso();
+  }));
+  $("#filtro-radicado").addEventListener("change", (ev) => { estadoUI.radicadoFiltro = ev.target.value; cargarFeed(); });
+  $("#btn-verificar").addEventListener("click", () => verificar(null));
+  $("#btn-revisar-publicaciones").addEventListener("click", () => revisarPublicaciones(null));
+  $("#btn-revisar-despacho").addEventListener("click", () => revisarPublicaciones([estadoUI.radicadoActual]));
+  $("#btn-vigilancia").addEventListener("click", async () => {
+    const activo = estadoUI.estado?.vigilante?.activo;
+    try {
+      await api(`/api/vigilante/${activo ? "detener" : "iniciar"}`, { method: "POST", body: "{}" });
+      toast(activo ? "Vigilancia en pausa. Solo se consultará al pulsar «Verificar ahora»." : "Vigilancia reanudada según el horario.", "ok");
+      await cargarEstado();
+    } catch (e) { toast(e.message, "error"); }
+  });
+  $("#btn-notif").addEventListener("click", async () => {
+    if (!("Notification" in window)) { toast("Este navegador no admite avisos."); return; }
+    const permiso = await Notification.requestPermission();
+    toast(permiso === "granted" ? "Avisará cuando aparezca un auto nuevo mientras esta pestaña esté abierta." : "Avisos no permitidos.");
+  });
+  $("#btn-cerrar-dialogo").addEventListener("click", () => $("#dialogo").close());
+  $("#dialogo").addEventListener("click", (ev) => { if (ev.target === ev.currentTarget) ev.currentTarget.close(); });
+  window.addEventListener("hashchange", enrutar);
+
+  cargarEstado().then(enrutar);
+})();
+</script>
+</body>
+</html>

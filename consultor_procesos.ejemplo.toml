@@ -1,0 +1,85 @@
+# Configuración de Consultor de Procesos.
+# Todos los valores son opcionales: lo que no se indique toma el valor predeterminado.
+
+[general]
+base_datos = "consultor_procesos.sqlite"
+# Identifíquese ante la Rama Judicial: un agente honesto con contacto es la mejor defensa
+# contra bloqueos, porque permite que el administrador le escriba antes de vetarlo.
+agente_usuario = "ConsultorDeProcesos/0.1 (vigilancia de radicados propios; contacto: su-correo@ejemplo.com)"
+nivel_registro = "INFO"
+# archivo_registro = "consultor_procesos.log"
+directorio_documentos = "documentos"   # caché local de los PDF descargados
+
+[cortesia]
+solicitudes_por_minuto = 12        # ritmo sostenido máximo (una cada 5 s)
+rafaga = 1                         # solicitudes inmediatas permitidas antes de esperar
+pausa_entre_procesos_segundos = 3  # respiro entre un radicado y el siguiente
+intentos_max = 4                   # intentos totales ante 429/5xx/tiempo de espera
+espera_base_segundos = 2           # retroceso exponencial: 2, 4, 8... con fluctuación
+espera_maxima_segundos = 60
+retry_after_maximo_segundos = 300  # si el servidor pide esperar más que esto, se desiste
+umbral_fallos_cortacircuito = 5    # fallos seguidos para suspender las consultas
+segundos_cortacircuito_abierto = 300
+presupuesto_diario_solicitudes = 400
+tiempo_espera_segundos = 20
+hora_inicio = 0                    # ventana horaria del modo por intervalo (0 y 24 = sin restricción)
+hora_fin = 24
+
+[verificacion]
+dias_gracia = 5                # si la última actuación es reciente, se releen actuaciones aunque la fecha no cambie
+horas_refresco_completo = 24   # cada cuántas horas se releen actuaciones aunque nada haya cambiado
+max_paginas_inicial = 20       # páginas (de 40) que se leen al registrar un radicado
+max_paginas_incremental = 3    # páginas que se leen en verificaciones posteriores
+palabras_clave = ["AUTO"]      # añada p. ej. "SENTENCIA", "FIJACION ESTADO" si quiere alertas de más tipos
+notificar_existentes = false   # true para recibir también las actuaciones ya existentes al agregar un radicado
+listar_documentos_de_autos = true   # al detectar un auto con documentos, pedir la lista (1 solicitud) para enlazar el PDF
+
+[publicaciones]
+# Micrositios de los despachos (portal Publicaciones Procesales): estados, avisos, traslados...
+habilitado = true
+tipos = ["Notificaciones por Estados", "Notificaciones por Aviso", "Traslados especiales y ordinarios", "Autos masivo"]
+horas_entre_revisiones = 20      # cada despacho se revisa a lo sumo una vez en este lapso (cada consulta pesa ~1 MB)
+dias_ventana_inicial = 7         # días hacia atrás que se miran la primera vez
+analizar_pdf = true              # descargar los PDF (estado, autos) y buscar el radicado dentro
+max_documentos_por_publicacion = 3
+max_paginas = 3
+solicitudes_por_minuto = 4
+pausa_entre_despachos_segundos = 5
+
+[vigilancia]
+# Los autos se registran en horario laboral: se verifica a horas fijas, de lunes a viernes.
+horas = ["07:00", "10:00", "13:00", "17:00"]   # 4 veces al día; puede añadir p. ej. "15:00"
+dias = ["lun", "mar", "mie", "jue", "vie"]
+hasta = "18:00"                # después de esta hora no se ejecuta ninguna verificación atrasada
+fluctuacion_minutos = 5        # cada verificación arranca hasta 5 min después de la hora, al azar
+festivos = []                  # fechas "AAAA-MM-DD" en las que no se verifica
+iniciar_con_interfaz = true    # al abrir la interfaz ('web'), la vigilancia arranca sola con este horario
+intervalo_minutos = 240        # solo si horas = []: verificar cada tantos minutos
+jitter_fraccion = 0.2          # +/- 20 % aleatorio sobre el intervalo
+
+[web]
+host = "127.0.0.1"          # solo accesible desde este equipo
+puerto = 8765
+abrir_navegador = true
+segundos_actualizacion = 30
+
+[notificaciones]
+consola = true
+solo_autos_consola = false
+archivo_jsonl = "novedades.jsonl"   # "" para desactivar
+
+[notificaciones.correo]
+habilitado = false
+servidor = "smtp.gmail.com"
+puerto = 587
+usuario = "su-correo@gmail.com"
+contrasena_env = "CONSULTOR_SMTP_CONTRASENA"   # la contraseña se lee de esta variable de entorno
+remitente = "su-correo@gmail.com"
+destinatarios = ["destino@ejemplo.com"]
+usar_tls = true
+solo_autos = true
+
+[notificaciones.webhook]
+habilitado = false
+url = ""
+solo_autos = false

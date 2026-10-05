@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "consultor-procesos"
+version = "0.2.0"
+description = "Vigilancia cortés de procesos judiciales en la Rama Judicial de Colombia (CPNU): detecta autos y actuaciones nuevas sin sobrecargar el portal."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Consultor de Procesos" }]
+dependencies = ["httpx>=0.27", "pypdf>=4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "respx>=0.21"]
+
+[project.scripts]
+consultor-procesos = "consultor_procesos.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"consultor_procesos.adaptadores.web" = ["estatico/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+  "en_vivo: pruebas que consultan la API real de la Rama Judicial (requieren CONSULTOR_PRUEBAS_EN_VIVO=1)",
+]

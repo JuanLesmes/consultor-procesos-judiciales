@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+novedades.jsonl
+consultor_procesos.log
+consultor_procesos.toml
+documentos/
+
+# Paquetes compilados para instalar sin internet (se regeneran con: pip wheel . -w wheels)
+wheels/
