@@ -1,10 +1,17 @@
-"""Servidor web local (biblioteca estándar) que expone la vigilancia como una pequeña aplicación.
+"""Servidor web (biblioteca estándar) que expone la vigilancia como una pequeña aplicación.
+
+En producción corre en un contenedor detrás de Caddy, que pone el HTTPS. Con usuarios
+configurados (CONSULTOR_USUARIOS) toda ruta exige usuario y contraseña, salvo `/api/salud`,
+que solo dice si el proceso está vivo y es lo que consultan Docker y el despliegue.
 
 Diseño:
 
 * `AplicacionWeb` contiene los endpoints como funciones puras sobre `(método, ruta, consulta,
   cuerpo)` y devuelve `(estado, contenido, tipo, cabeceras)`. Se prueba sin abrir puertos.
 * `ManejadorHTTP` y `ServidorWeb` son el transporte: `ThreadingHTTPServer` en un hilo.
+* `AplicacionWeb.autorizar` aplica autenticación, CSRF y origen antes de despachar; también
+  se prueba sin abrir puertos.
+* `/api/monitor` resume si la vigilancia está sana (para el monitor programado en GitHub).
 * Un único candado (`_candado_fuente`) garantiza que hacia la Rama Judicial haya como
   máximo una operación en curso, sea la verificación en segundo plano, la vigilancia
   periódica o una consulta puntual. La cortesía del cliente HTTP se mantiene intacta.
@@ -17,8 +24,8 @@ import logging
 import re
 import sys
 import threading
-from collections.abc import Callable
-from datetime import date, datetime
+from collections.abc import Callable, Mapping
+from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -41,7 +48,7 @@ from ...dominio.modelos import Novedad, ProcesoVigilado, ResultadoVerificacion
 from ...dominio.puertos import Repositorio
 from ...dominio.reglas import validar_radicado
 from ...enlaces import URL_PORTAL_CONSULTA, url_origen_actuaciones, url_origen_ficha
-from ...infraestructura.cortesia import PresupuestoDiario
+from ...infraestructura.cortesia import Cortacircuito, PresupuestoDiario
 from ..notificacion.formato import (
     serializar_actuacion,
     serializar_coincidencia,
@@ -49,6 +56,7 @@ from ..notificacion.formato import (
     serializar_documento,
     serializar_publicacion,
 )
+from .seguridad import CABECERA_CSRF, REINO, VALOR_CSRF, Autenticador, cabeceras_seguridad
 from .visor import renderizar_error, renderizar_visor
 
 log = logging.getLogger(__name__)
@@ -56,6 +64,10 @@ log = logging.getLogger(__name__)
 DIRECTORIO_ESTATICO = Path(__file__).parent / "estatico"
 Respuesta = tuple[int, Any, str, dict[str, str]]
 Manejador = Callable[..., Any]
+RUTAS_PUBLICAS = frozenset({"/api/salud"})
+METODOS_QUE_MODIFICAN = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+MAXIMO_CUERPO = 64 * 1024
+LIMITE_DESCARTE = 1024 * 1024  # cuerpo que se lee y descarta para poder responder limpio (Caddy corta en 1 MB)
 
 
 class ErrorHTTP(Exception):
@@ -127,12 +139,19 @@ class TrabajoVerificacion:
 class Vigilante:
     """Ejecuta el planificador en un hilo y permite arrancarlo y detenerlo desde la interfaz."""
 
-    def __init__(self, fabrica: Callable[[Callable[[], None]], Planificador], ciclo: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        fabrica: Callable[[Callable[[], None]], Planificador],
+        ciclo: Callable[[], None],
+        ahora: Callable[[], datetime] = datetime.now,
+    ) -> None:
         self._fabrica = fabrica
         self._ciclo = ciclo
+        self._ahora = ahora
         self._planificador: Planificador | None = None
         self._hilo: threading.Thread | None = None
         self._candado = threading.Lock()
+        self.iniciado_en: datetime | None = None
 
     @property
     def activo(self) -> bool:
@@ -145,6 +164,7 @@ class Vigilante:
             self._planificador = self._fabrica(self._ciclo)
             self._hilo = threading.Thread(target=self._planificador.ejecutar, name="vigilante", daemon=True)
             self._hilo.start()
+            self.iniciado_en = self._ahora()
             return True
 
     def detener(self, espera: float = 5.0) -> bool:
@@ -177,6 +197,10 @@ class AplicacionWeb:
         ahora: Callable[[], datetime] = datetime.now,
         directorio_estatico: Path = DIRECTORIO_ESTATICO,
         horario: Horario | None = None,
+        autenticador: Autenticador | None = None,
+        commit: str | None = None,
+        avisos_configuracion: list[str] | None = None,
+        tolerancia_minutos: float = 45.0,
     ) -> None:
         self._servicio = servicio
         self._repositorio = repositorio
@@ -185,10 +209,16 @@ class AplicacionWeb:
         self._ahora = ahora
         self._directorio_estatico = directorio_estatico
         self._horario = horario
+        self.autenticador = autenticador
+        self._commit = commit or None
+        self._avisos_configuracion = list(avisos_configuracion or [])
+        self._tolerancia = timedelta(minutes=tolerancia_minutos)
         self._candado_fuente = threading.Lock()
         self.trabajo = TrabajoVerificacion()
-        self.vigilante = Vigilante(fabrica_planificador, self._ciclo_vigilante) if fabrica_planificador else None
+        self.vigilante = Vigilante(fabrica_planificador, self._ciclo_vigilante, ahora) if fabrica_planificador else None
         self._rutas: list[tuple[str, re.Pattern[str], Manejador]] = [
+            ("GET", re.compile(r"/api/salud"), self._salud),
+            ("GET", re.compile(r"/api/monitor"), self._monitor),
             ("GET", re.compile(r"/"), self._indice),
             ("GET", re.compile(r"/index\.html"), self._indice),
             ("GET", re.compile(r"/documento/(?P<id_registro>\d+)"), self._pagina_documento),
@@ -215,6 +245,35 @@ class AplicacionWeb:
             ("POST", re.compile(r"/api/vigilante/iniciar"), self._iniciar_vigilante),
             ("POST", re.compile(r"/api/vigilante/detener"), self._detener_vigilante),
         ]
+
+    # --- control de acceso -------------------------------------------------------------
+
+    def autorizar(self, metodo: str, ruta: str, cabeceras: Mapping[str, str], ip: str) -> Respuesta | None:
+        """None si la petición puede seguir; si no, la respuesta de rechazo (401, 403 o 429)."""
+        ruta = ruta.rstrip("/") or "/"
+        if ruta in RUTAS_PUBLICAS and metodo == "GET":
+            return None
+        if self.autenticador is not None and self.autenticador.activo:
+            resultado = self.autenticador.autenticar(cabeceras.get("Authorization"), ip)
+            if resultado.bloqueado:
+                return self._json(
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    {"error": "Demasiados intentos fallidos desde esta dirección; espere unos minutos."},
+                    {"Retry-After": str(resultado.segundos_bloqueo)},
+                )
+            if not resultado.aceptado:
+                return self._json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"error": "Se requiere usuario y contraseña."},
+                    {"WWW-Authenticate": f'Basic realm="{REINO}", charset="UTF-8"'},
+                )
+        if ruta.startswith("/api/") and (cabeceras.get("Sec-Fetch-Site") or "").lower() == "cross-site":
+            return self._json(HTTPStatus.FORBIDDEN, {"error": "Petición originada en otro sitio."})
+        if metodo in METODOS_QUE_MODIFICAN and cabeceras.get(CABECERA_CSRF) != VALOR_CSRF:
+            return self._json(
+                HTTPStatus.FORBIDDEN, {"error": f"Falta la cabecera {CABECERA_CSRF}: {VALOR_CSRF} (protección CSRF)."}
+            )
+        return None
 
     # --- despacho ------------------------------------------------------------------------
 
@@ -340,13 +399,8 @@ class AplicacionWeb:
         }
 
     def _pendientes_por_radicado(self) -> dict[str, dict[str, int]]:
-        conteo: dict[str, dict[str, int]] = {}
-        for novedad in self._repositorio.listar_novedades_recientes(limite=5000, solo_pendientes=True):
-            entrada = conteo.setdefault(novedad.radicado, {"total": 0, "autos": 0})
-            entrada["total"] += 1
-            if novedad.es_auto:
-                entrada["autos"] += 1
-        return conteo
+        # Un GROUP BY en la base: la interfaz lo pide cada 30 s y antes cargaba hasta 5.000 filas.
+        return self._repositorio.contar_pendientes_por_radicado()
 
     # --- página ----------------------------------------------------------------------------
 
@@ -365,6 +419,7 @@ class AplicacionWeb:
         return {
             "actualizado_en": _iso(self._ahora()),
             "version": __version__,
+            "commit": self._commit,
             "segundos_actualizacion": self._segundos_actualizacion,
             "portal": URL_PORTAL_CONSULTA,
             "fuente": {
@@ -388,6 +443,104 @@ class AplicacionWeb:
             "verificacion": self.trabajo.a_dict(),
             "vigilados": vigilados,
         }
+
+    # --- salud y monitoreo ------------------------------------------------------------------
+
+    def _salud(self, consulta: dict, cuerpo: dict) -> Respuesta:
+        """Pública y barata: el proceso responde y la base de datos se puede leer."""
+        datos = {"estado": "ok", "version": __version__, "commit": self._commit}
+        try:
+            self._repositorio.contar_pendientes()
+        except Exception:  # noqa: BLE001 - cualquier fallo de la base deja al contenedor "no sano"
+            log.exception("La comprobación de salud no pudo leer la base de datos")
+            return self._json(HTTPStatus.SERVICE_UNAVAILABLE, {**datos, "estado": "error"})
+        return self._json(HTTPStatus.OK, datos)
+
+    def _monitor(self, consulta: dict, cuerpo: dict) -> dict:
+        """¿Está vigilando bien? Lo consulta el monitor programado; `ok` es False si hay algo que atender."""
+        ahora = self._ahora()
+        problemas: list[str] = []
+        avisos: list[str] = list(self._avisos_configuracion)
+        vigilados = self._repositorio.listar_vigilados()
+        vigilante = self.vigilante
+        activa = vigilante is not None and vigilante.activo
+        if not activa:
+            problemas.append("La vigilancia automática está detenida: no se está consultando la Rama Judicial.")
+        if not vigilados:
+            avisos.append("No hay procesos en vigilancia.")
+
+        verificaciones = self._repositorio.listar_verificaciones(limite=max(50, 3 * len(vigilados)))
+        ultima = verificaciones[0]["momento"] if verificaciones else None
+        atrasada = self._verificacion_atrasada(ahora, ultima) if activa and vigilados else None
+        if atrasada is not None:
+            problemas.append(f"La verificación programada de las {atrasada:%H:%M} del {atrasada:%Y-%m-%d} no se ejecutó.")
+
+        ultimas: dict[str, dict] = {}
+        for fila in verificaciones:
+            ultimas.setdefault(fila["radicado"], fila)
+        activos = {v.radicado for v in vigilados}
+        errores = [f for r, f in ultimas.items() if r in activos and f["estado"] == "ERROR"]
+        if errores:
+            detalle = "; ".join(f"{f['radicado']}: {f['mensaje']}" for f in errores[:3])
+            problemas.append(f"{len(errores)} proceso(s) terminaron en error en su última verificación ({detalle}).")
+        omitidos = [r for r, f in ultimas.items() if r in activos and f["estado"] == "OMITIDO"]
+        if omitidos:
+            avisos.append(
+                f"{len(omitidos)} proceso(s) quedaron sin verificar porque la fuente no respondió o se agotó el presupuesto."
+            )
+        if self.trabajo.error:
+            problemas.append(f"La última verificación falló: {self.trabajo.error}")
+        for resultado in self.trabajo.publicaciones or []:
+            if resultado.get("estado") == "ERROR":
+                problemas.append(f"Publicaciones del despacho {resultado.get('despacho_codigo')}: {resultado.get('mensaje')}")
+
+        cortacircuito = getattr(self._servicio.fuente, "cortacircuito", None)
+        estado_circuito = cortacircuito.estado if isinstance(cortacircuito, Cortacircuito) else None
+        if estado_circuito not in (None, Cortacircuito.CERRADO):
+            avisos.append("La Rama Judicial no está respondiendo; las consultas están suspendidas temporalmente.")
+        presupuesto = None
+        if self._presupuesto is not None:
+            presupuesto = {"usado": self._presupuesto.usado(), "maximo": self._presupuesto.maximo}
+            if presupuesto["usado"] >= presupuesto["maximo"]:
+                avisos.append("Se agotó el presupuesto diario de solicitudes; se reanuda mañana.")
+
+        return {
+            "ok": not problemas,
+            "problemas": problemas,
+            "avisos": avisos,
+            "version": __version__,
+            "commit": self._commit,
+            "ahora": _iso(ahora),
+            "vigilancia": {
+                "activa": activa,
+                "iniciada_en": _iso(vigilante.iniciado_en) if vigilante else None,
+                "proxima_ejecucion": vigilante.a_dict()["proxima_ejecucion"] if vigilante else None,
+                "horario": self._horario.a_dict() if self._horario else None,
+                "verificacion_en_curso": self.trabajo.en_curso,
+            },
+            "ultima_verificacion": _iso(ultima),
+            "procesos": len(vigilados),
+            "pendientes": {
+                "total": self._repositorio.contar_pendientes(),
+                "autos": self._repositorio.contar_pendientes(solo_autos=True),
+            },
+            "presupuesto": presupuesto,
+            "cortacircuito": estado_circuito,
+        }
+
+    def _verificacion_atrasada(self, ahora: datetime, ultima: datetime | None) -> datetime | None:
+        """La hora programada que debió ejecutarse y no se ejecutó (solo cuenta desde que arrancó la vigilancia)."""
+        if self._horario is None or self.trabajo.en_curso or self.vigilante is None:
+            return None
+        programada = self._horario.ultima(ahora)
+        arranque = self.vigilante.iniciado_en
+        if programada is None or arranque is None or programada < arranque:
+            return None
+        if ahora - programada <= self._tolerancia:
+            return None
+        if ultima is not None and ultima >= programada:
+            return None
+        return programada
 
     # --- vigilados --------------------------------------------------------------------------
 
@@ -709,7 +862,9 @@ class AplicacionWeb:
 
 class ManejadorHTTP(BaseHTTPRequestHandler):
     aplicacion: AplicacionWeb
-    server_version = "ConsultorProcesos/0.1"
+    confiar_proxy: bool = False
+    server_version = f"ConsultorProcesos/{__version__}"
+    sys_version = ""
     protocol_version = "HTTP/1.1"
 
     def log_message(self, formato: str, *args: Any) -> None:  # noqa: N802 - nombre impuesto por la biblioteca
@@ -724,8 +879,22 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         self._despachar("DELETE")
 
+    def ip_cliente(self) -> str:
+        """Detrás de Caddy, la IP real es la última de X-Forwarded-For (la que agregó el proxy)."""
+        if self.confiar_proxy:
+            reenviada = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+            if reenviada:
+                return reenviada
+        return self.client_address[0]
+
     def _leer_cuerpo(self) -> dict | None:
-        longitud = int(self.headers.get("Content-Length") or 0)
+        try:
+            longitud = int(self.headers.get("Content-Length") or 0)
+        except ValueError as exc:
+            raise ErrorHTTP(HTTPStatus.BAD_REQUEST, "Content-Length inválido.") from exc
+        if longitud > MAXIMO_CUERPO:
+            self._descartar_cuerpo()
+            raise ErrorHTTP(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "El cuerpo de la petición es demasiado grande.")
         if longitud <= 0:
             return None
         crudo = self.rfile.read(longitud)
@@ -739,14 +908,33 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
             raise ErrorHTTP(HTTPStatus.BAD_REQUEST, "El cuerpo debe ser un objeto JSON.")
         return datos
 
+    def _descartar_cuerpo(self) -> None:
+        """Lee y descarta el cuerpo de una petición rechazada; sin esto el cliente vería la conexión cortada."""
+        try:
+            longitud = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            longitud = 0
+        if 0 < longitud <= LIMITE_DESCARTE:
+            self.rfile.read(longitud)
+        elif longitud > 0:
+            self.close_connection = True
+
     def _despachar(self, metodo: str) -> None:
         url = urlparse(self.path)
-        try:
-            cuerpo = self._leer_cuerpo()
-        except ErrorHTTP as exc:
-            estado, contenido, tipo, cabeceras = AplicacionWeb._json(exc.estado, {"error": exc.mensaje})
+        rechazo = self.aplicacion.autorizar(metodo, url.path, self.headers, self.ip_cliente())
+        if rechazo is not None:
+            estado, contenido, tipo, cabeceras = rechazo
+            self._descartar_cuerpo()
         else:
-            estado, contenido, tipo, cabeceras = self.aplicacion.manejar(metodo, url.path, parse_qs(url.query), cuerpo)
+            try:
+                cuerpo = self._leer_cuerpo()
+            except ErrorHTTP as exc:
+                estado, contenido, tipo, cabeceras = AplicacionWeb._json(exc.estado, {"error": exc.mensaje})
+            else:
+                estado, contenido, tipo, cabeceras = self.aplicacion.manejar(metodo, url.path, parse_qs(url.query), cuerpo)
+        cabeceras = {**cabeceras_seguridad(tipo), **cabeceras}
+        if url.path.startswith("/api/"):
+            cabeceras.setdefault("Cache-Control", "no-store")
         if isinstance(contenido, (dict, list)):
             datos = json.dumps(contenido, ensure_ascii=False, default=str).encode("utf-8")
         elif isinstance(contenido, str):
@@ -764,10 +952,13 @@ class ManejadorHTTP(BaseHTTPRequestHandler):
 
 
 class ServidorWeb:
-    def __init__(self, aplicacion: AplicacionWeb, host: str = "127.0.0.1", puerto: int = 8765) -> None:
+    def __init__(
+        self, aplicacion: AplicacionWeb, host: str = "127.0.0.1", puerto: int = 8770, confiar_proxy: bool = False
+    ) -> None:
         self.aplicacion = aplicacion
         self._host = host
         self._puerto = puerto
+        self._confiar_proxy = confiar_proxy
         self._servidor: ThreadingHTTPServer | None = None
         self._hilo: threading.Thread | None = None
 
@@ -784,7 +975,11 @@ class ServidorWeb:
         return f"http://{host}:{puerto}/"
 
     def iniciar(self) -> tuple[str, int]:
-        manejador = type("ManejadorHTTPConfigurado", (ManejadorHTTP,), {"aplicacion": self.aplicacion})
+        manejador = type(
+            "ManejadorHTTPConfigurado",
+            (ManejadorHTTP,),
+            {"aplicacion": self.aplicacion, "confiar_proxy": self._confiar_proxy},
+        )
         # En Windows SO_REUSEADDR permite que dos procesos escuchen el mismo puerto y las
         # conexiones se repartan al azar entre ellos; se prefiere fallar con "puerto en uso".
         ThreadingHTTPServer.allow_reuse_address = sys.platform != "win32"

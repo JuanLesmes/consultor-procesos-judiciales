@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import threading
 from collections.abc import Iterable
 from datetime import date, datetime
 
@@ -28,6 +29,7 @@ class RepositorioMemoria:
         self._revisiones: dict[str, datetime] = {}
         self._verificaciones: list[dict] = []
         self._contadores: dict[date, int] = {}
+        self._candado = threading.Lock()
 
     # --- vigilados ---
     def guardar_vigilado(self, vigilado: ProcesoVigilado) -> None:
@@ -120,6 +122,16 @@ class RepositorioMemoria:
 
     def contar_pendientes(self, solo_autos: bool = False) -> int:
         return sum(1 for n in self._todas() if not n.revisada and (n.es_auto or not solo_autos))
+
+    def contar_pendientes_por_radicado(self) -> dict[str, dict[str, int]]:
+        conteo: dict[str, dict[str, int]] = {}
+        for novedad in self._todas():
+            if novedad.revisada:
+                continue
+            entrada = conteo.setdefault(novedad.radicado, {"total": 0, "autos": 0})
+            entrada["total"] += 1
+            entrada["autos"] += 1 if novedad.es_auto else 0
+        return conteo
 
     def marcar_revisada(self, id_registro: int, revisada: bool = True) -> bool:
         for por_radicado in self._actuaciones.values():
@@ -250,8 +262,17 @@ class RepositorioMemoria:
         return self._contadores.get(fecha, 0)
 
     def incrementar_contador(self, fecha: date, cantidad: int = 1) -> int:
-        self._contadores[fecha] = self._contadores.get(fecha, 0) + cantidad
-        return self._contadores[fecha]
+        with self._candado:
+            self._contadores[fecha] = self._contadores.get(fecha, 0) + cantidad
+            return self._contadores[fecha]
+
+    def incrementar_si_menor(self, fecha: date, maximo: int) -> int | None:
+        with self._candado:
+            actual = self._contadores.get(fecha, 0)
+            if actual >= maximo:
+                return None
+            self._contadores[fecha] = actual + 1
+            return actual + 1
 
     def cerrar(self) -> None:
         return None

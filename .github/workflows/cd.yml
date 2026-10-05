@@ -1,0 +1,110 @@
+# Despliegue continuo: cuando la CI de `main` termina bien, publica la imagen en GHCR, la instala en el
+# VPS por SSH (con respaldo previo y vuelta atrás automática) y revisa desde fuera que quedó sana.
+# Mientras no exista la variable VPS_HOST, este flujo no hace nada. Configuración: docs/DESPLIEGUE.md.
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: despliegue-produccion
+  cancel-in-progress: false
+
+jobs:
+  desplegar:
+    name: Desplegar en el VPS
+    if: >-
+      vars.VPS_HOST != '' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: produccion
+      url: ${{ vars.CONSULTOR_URL }}
+    env:
+      COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
+      VPS_HOST: ${{ vars.VPS_HOST }}
+      VPS_USUARIO: ${{ vars.VPS_USUARIO || 'deploy' }}
+      VPS_PUERTO: ${{ vars.VPS_PUERTO || '22' }}
+      VPS_CARPETA: ${{ vars.VPS_CARPETA || '/opt/consultor' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.COMMIT }}
+
+      - name: Nombre de la imagen
+        run: |
+          echo "IMAGEN=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "ETIQUETA=sha-${COMMIT:0:12}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construir y publicar en GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: COMMIT=${{ env.COMMIT }}
+          tags: |
+            ${{ env.IMAGEN }}:${{ env.ETIQUETA }}
+            ${{ env.IMAGEN }}:main
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Preparar SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_despliegue
+          chmod 600 ~/.ssh/id_despliegue
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host vps
+            HostName $VPS_HOST
+            User $VPS_USUARIO
+            Port $VPS_PUERTO
+            IdentityFile ~/.ssh/id_despliegue
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Copiar los archivos del despliegue
+        run: |
+          ssh vps "mkdir -p '$VPS_CARPETA/despliegue' '$VPS_CARPETA/datos'"
+          scp docker-compose.yml docker-compose.compartido.yml Caddyfile .env.ejemplo "vps:$VPS_CARPETA/"
+          scp despliegue/desplegar.sh "vps:$VPS_CARPETA/despliegue/"
+
+      - name: Instalar la versión nueva
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # El token de este trabajo solo sirve mientras corre: se usa para descargar la imagen y se borra.
+          printf '%s' "$TOKEN" | ssh vps "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+          ssh vps "bash '$VPS_CARPETA/despliegue/desplegar.sh' '$IMAGEN:$ETIQUETA' '$COMMIT'"
+
+      - name: Cerrar la sesión de GHCR en el VPS
+        if: always()
+        run: ssh vps "docker logout ghcr.io" || true
+
+      - name: Revisar desde internet
+        if: vars.CONSULTOR_URL != ''
+        env:
+          CONSULTOR_MONITOR_USUARIO: ${{ secrets.CONSULTOR_MONITOR_USUARIO }}
+          CONSULTOR_MONITOR_CLAVE: ${{ secrets.CONSULTOR_MONITOR_CLAVE }}
+        run: python3 scripts/vigilar.py "${{ vars.CONSULTOR_URL }}" --commit "$COMMIT" --esperar 120

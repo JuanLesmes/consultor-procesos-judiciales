@@ -249,7 +249,9 @@
   }
 
   async function api(ruta, opciones = {}) {
-    const respuesta = await fetch(ruta, { headers: { "Content-Type": "application/json", ...(opciones.headers || {}) }, ...opciones });
+    // X-Requested-With: el servidor rechaza sin ella toda petición que modifica (protección CSRF).
+    const cabeceras = { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest", ...(opciones.headers || {}) };
+    const respuesta = await fetch(ruta, { ...opciones, headers: cabeceras, credentials: "same-origin" });
     const tipo = respuesta.headers.get("Content-Type") || "";
     const datos = tipo.includes("json") ? await respuesta.json() : await respuesta.text();
     if (!respuesta.ok) throw new Error((datos && datos.error) || `Error ${respuesta.status}`);
@@ -283,7 +285,7 @@
       estado = await api("/api/estado");
     } catch (e) {
       $("#chip-vigilancia").className = "chip error";
-      $("#chip-vigilancia").innerHTML = '<span class="punto"></span> Sin conexión con el servidor local';
+      $("#chip-vigilancia").innerHTML = '<span class="punto"></span> Sin conexión con el servidor';
       programarActualizacion(10);
       return;
     }

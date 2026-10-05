@@ -16,6 +16,7 @@ import re
 from datetime import date
 from urllib.parse import parse_qs, urljoin, urlparse
 
+from ...dominio.errores import RespuestaInesperada
 from ...dominio.modelos import DocumentoPublicado, PaginaPublicaciones, Publicacion
 from ...enlaces import URL_PUBLICACIONES
 
@@ -172,6 +173,13 @@ def analizar_lista(
         if publicacion is not None:
             publicaciones.append(publicacion)
     total = analizar_total(pagina_html)
+    if total is not None and not publicaciones and total > por_pagina * (pagina - 1):
+        # El portal anuncia resultados para esta página pero no se reconoció ninguna fila:
+        # cambió el HTML. Seguir como si no hubiera publicaciones escondería los estados.
+        raise RespuestaInesperada(
+            f"El portal de publicaciones informa {total} resultado(s) pero no se reconoció ninguna publicación; "
+            "probablemente cambió la estructura de la página."
+        )
     if total is None:
         total = len(publicaciones) + (por_pagina * (pagina - 1))
     return PaginaPublicaciones(publicaciones=tuple(publicaciones), pagina=pagina, por_pagina=por_pagina, total=total)

@@ -14,28 +14,34 @@ Unificada (CPNU) de la Rama Judicial, enlazar el documento del auto cuando exist
    Queda explícitamente fuera cualquier técnica de evasión (rotación de IP, suplantación de
    navegador, resolución de CAPTCHA). La API de la CPNU no tiene CAPTCHA, así que en este
    flujo no hay nada que evadir.
-3. *Operable por una persona no técnica.* Un ejecutable, un archivo de configuración, una
-   base de datos de un solo archivo, una interfaz web local, sin servicios externos obligatorios.
+3. *Operable sin intervención.* Corre en un servidor (un contenedor Docker detrás de Caddy),
+   se despliega solo desde GitHub y un monitor externo avisa si deja de vigilar bien. Una base
+   de datos de un solo archivo; la configuración de cada instalación va en variables de entorno.
 4. *Verificable.* Toda la lógica de cortesía y la interfaz deben poder probarse sin dormir ni
    tocar la red.
+5. *Fallar en voz alta.* Si la Rama Judicial cambia el formato de sus respuestas, el programa no
+   puede seguir con valores por defecto: la verificación queda en `ERROR` y el monitor lo reporta.
 
 ## 2. Vista de contexto
 
 ```mermaid
 flowchart LR
-    U[Consultor / abogado] -->|navegador local| W[Interfaz web 127.0.0.1:8765]
-    U -->|CLI: agregar, verificar, vigilar, consultar| C[Consultor de Procesos]
-    W --> C
+    U[Abogados de la firma] -->|HTTPS, usuario y contraseña| K[Caddy]
+    K --> W[Interfaz web :8770 en el contenedor]
+    W --> C[Consultor de Procesos]
+    O[Monitor y CD en GitHub Actions] -->|/api/salud, /api/monitor| K
     C -->|GET JSON, 12/min, identificado| API[(API CPNU\nconsultaprocesos.ramajudicial.gov.co:448)]
     C -->|GET HTML, 4/min, 1 vez/día por despacho| PUB[(Publicaciones Procesales\npublicacionesprocesales.ramajudicial.gov.co)]
-    C --> BD[(SQLite local)]
+    C --> BD[(SQLite en el volumen datos/)]
     C --> D[(documentos/ PDF en caché)]
-    C --> N1[Consola]
+    C --> N1[Registros del contenedor]
     C --> N2[novedades.jsonl]
     C --> N3[Correo SMTP]
     C --> N4[Webhook]
-    T[Programador de tareas de Windows] -.->|verificar cada N horas| C
 ```
+
+El despliegue y la operación (CI, CD, monitor, respaldos) se describen en
+[DESPLIEGUE.md](DESPLIEGUE.md).
 
 ## 3. Estilo: hexagonal (puertos y adaptadores)
 
@@ -153,6 +159,13 @@ La primera lectura de un radicado descarga hasta `max_paginas_inicial` páginas 
 `notificar_existentes = true`. Así, agregar un proceso con años de historia no dispara
 cientos de avisos ni de solicitudes.
 
+Las lecturas siguientes paran en la primera actuación ya conocida, que en el caso normal está
+en la página 1. El tope es el mismo `max_paginas_inicial`: si entre dos verificaciones llegaron
+muchas actuaciones, se sigue leyendo hasta empalmar con lo conocido. (Hasta la versión 0.2 las
+lecturas incrementales paraban en 3 páginas: con más de 120 actuaciones nuevas entre dos
+verificaciones, las más antiguas de ellas no se leían nunca.) Si ni el tope alcanza, el
+resultado lo advierte en su mensaje.
+
 ### 4.3 Un radicado, varios despachos
 
 El mismo número de 23 dígitos puede aparecer en primera instancia y en el tribunal de
@@ -198,22 +211,34 @@ desde la caché en disco en las siguientes visualizaciones.
 
 ## 6. Política de cortesía (infraestructura/cortesia.py)
 
-Orden de comprobación en cada solicitud, dentro de `ClienteCPNU._solicitar`:
+Orden de comprobación en cada solicitud, dentro de `SolicitanteCortes.get`
+(`infraestructura/http_cortes.py`, compartido por la CPNU y Publicaciones Procesales):
 
 1. **Cortacircuito** `permitir()`. Si está abierto, se lanza `CircuitoAbierto` sin tocar la red.
 2. **Presupuesto diario** `consumir()`. Si se alcanzó el tope, `PresupuestoAgotado`.
 3. **Limitador de tasa** `esperar_turno()`. Cubeta de fichas: `solicitudes_por_minuto` sostenidas, `rafaga` inmediatas.
-4. **HTTP GET** con `User-Agent` propio, `Accept: application/json`, tiempo de espera de 20 s.
+4. **HTTP GET** con `User-Agent` propio (forzado a ASCII), `Accept: application/json`, tiempo de espera de 20 s.
 5. Según la respuesta:
    - `2xx` -> éxito, el cortacircuito se cierra.
-   - `4xx` distinto de 408/425/429 -> `ErrorFuente` definitivo. **No** se reintenta y **no**
-     cuenta como fallo del cortacircuito (la fuente funciona; el problema es la petición).
+   - `4xx` distinto de 408/425/429 -> `ErrorFuente` definitivo, sin reintento. Para el
+     cortacircuito cuenta como respuesta sana (la fuente funciona; el problema es la petición),
+     salvo 401 y 403, que pueden ser un bloqueo y cuentan como fallo.
    - `429`, `5xx`, tiempo de espera, error de conexión -> fallo transitorio: cuenta para el
      cortacircuito y se reintenta con espera `min(base * factor^(n-1), maximo) * U(0.5, 1)`,
      salvo que venga `Retry-After`, que se respeta tal cual (y si pide más de
      `retry_after_maximo`, se desiste).
 6. Agotados los intentos -> `FuenteNoDisponible`. `ServicioVigilancia.verificar_todos`
    marca el resto del lote como `OMITIDO` en lugar de seguir insistiendo.
+
+Toda solicitud que el cortacircuito deja pasar le informa el resultado: éxito, fallo o, si
+salió por una excepción antes de saber nada de la fuente (por ejemplo el presupuesto agotado),
+`liberar_sonda()`. Además, una sonda del estado SEMIABIERTO que no se resolviera vence tras
+`segundos_abierto`. (Hasta la versión 0.2, una sonda que recibía un 4xx dejaba el circuito
+bloqueado hasta reiniciar el programa.)
+
+El presupuesto diario se descuenta con una sola operación atómica del contador
+(`incrementar_si_menor`: en SQLite, un `INSERT ... ON CONFLICT DO UPDATE ... WHERE cantidad < ?`),
+así que ni varios hilos ni varios procesos sobre la misma base pueden pasarse del tope.
 
 Además del cliente, el **Planificador** (`aplicacion/planificador.py`) decide *cuándo* se
 verifica. Su modo predeterminado es por **horario** (`aplicacion/horario.py`): horas fijas en
@@ -246,8 +271,10 @@ flowchart LR
 
 - **`AplicacionWeb`** contiene los endpoints como funciones sobre `(método, ruta, consulta, cuerpo)`
   y devuelve `(estado, contenido, tipo, cabeceras)`. Se prueba sin abrir puertos.
-- **`ServidorWeb`** es el transporte: `ThreadingHTTPServer` de la biblioteca estándar en un hilo,
-  escuchando solo en `127.0.0.1` por defecto. Sin dependencias adicionales.
+- **`ServidorWeb`** es el transporte: `ThreadingHTTPServer` de la biblioteca estándar en un hilo.
+  Escucha en `127.0.0.1` por defecto; en el contenedor, en `0.0.0.0:8770` detrás de Caddy
+  (`--proxy`: la IP del cliente sale de `X-Forwarded-For`). `docker stop` (SIGTERM) se atiende
+  como Ctrl+C: detiene la vigilancia y el servidor en orden.
 - **Verificación en segundo plano.** `POST /api/verificar` toma el candado de la fuente, lanza un
   hilo y responde 202; la página consulta `/api/estado` cada 3 s mientras dura y muestra el resumen
   al terminar. Si el candado está tomado, responde 409 en lugar de encolar trabajo.
@@ -257,11 +284,28 @@ flowchart LR
   guardada en `procesos_vigilados`); `GET /api/procesos/{radicado}` entrega el nivel 2: ficha,
   historial completo, coincidencias en publicaciones y bitácora. La página es una sola (`#/procesos`,
   `#/proceso/{radicado}`, `#/novedades`).
-- **Sin autenticación.** Es una herramienta local de un solo usuario; el README advierte no exponerla.
+- **Seguridad** (`adaptadores/web/seguridad.py`). `AplicacionWeb.autorizar` se aplica antes de
+  despachar cualquier ruta, salvo `GET /api/salud`:
+  - Usuarios de `CONSULTOR_USUARIOS` (hash scrypt con sal) y autenticación HTTP Basic sobre
+    HTTPS. Una credencial validada se recuerda 10 minutos por su huella SHA-256 para no pagar
+    scrypt en cada petición. Tras 10 fallos seguidos, la IP queda bloqueada 15 minutos (429).
+  - CSRF: `POST`/`DELETE` exigen `X-Requested-With: XMLHttpRequest`; la API rechaza lo que el
+    navegador marca `Sec-Fetch-Site: cross-site`.
+  - Cabeceras: `nosniff`, `X-Frame-Options`, `Referrer-Policy`, CSP en las páginas HTML,
+    `Cache-Control: no-store` en la API. Cuerpos de más de 64 KB: 413.
+  - Sin usuarios, el servidor se niega a escuchar fuera de `127.0.0.1` (salvo `--sin-autenticacion`,
+    pensado para una red interna como el futuro acoplamiento con el Administrador).
+- **Salud y monitoreo.** `GET /api/salud` (pública) responde versión y commit si la base se puede
+  leer; la usan el `HEALTHCHECK` de Docker y el despliegue. `GET /api/monitor` (con usuario)
+  resume si la vigilancia está sana: `ok` es falso si la vigilancia está detenida, si una hora
+  programada no se ejecutó (con 45 minutos de tolerancia, contando solo desde que arrancó), si la
+  última verificación de algún proceso quedó en `ERROR` o si falló la de publicaciones.
 
 | Método y ruta | Función |
 | --- | --- |
 | `GET /` | Página de la interfaz |
+| `GET /api/salud` | Pública: `{"estado", "version", "commit"}`; 503 si la base no responde |
+| `GET /api/monitor` | Estado de la vigilancia para el monitor: `ok`, `problemas`, `avisos`, última verificación, presupuesto, cortacircuito |
 | `GET /api/estado` | Procesos con su ficha y pendientes, vigilante y horario, verificación en curso, presupuesto, fuente |
 | `GET/POST /api/vigilados`, `DELETE /api/vigilados/{radicado}` | Gestión de radicados |
 | `GET /api/procesos/{radicado}?limite`, `POST /api/procesos/{radicado}/alias` | Ficha con historial completo (nivel 2); cambio de nombre |
@@ -292,6 +336,11 @@ de la primera versión se crean con `ALTER TABLE` al abrir bases antiguas. Un ca
 serializa el acceso porque la interfaz web comparte la conexión entre hilos.
 `RepositorioMemoria` implementa el mismo puerto y se prueba con la misma batería parametrizada.
 
+Los contadores de pendientes por proceso que la interfaz pide cada 30 segundos se calculan con
+un `GROUP BY` en la base, y las coincidencias de publicaciones se cargan con una sola consulta
+para todas sus publicaciones. `respaldar()` usa la API de respaldo de SQLite, segura con el
+servidor en marcha; la usa el comando `respaldar` y el despliegue antes de cada actualización.
+
 ## 9. Detección de autos (dominio/reglas.py)
 
 ```text
@@ -313,6 +362,7 @@ bajo el tipo "Constancia secretarial" y solo la anotación dice "AUTO ORDENA REQ
 | --- | --- | --- |
 | Radicado mal formado | `RadicadoInvalido` | Se rechaza localmente antes de consultar; la web responde 400 |
 | 4xx definitivo, JSON inválido | `ErrorFuente` | El radicado queda en `ERROR`; el lote continúa; la web responde 502 |
+| Falta o cambió de nombre una clave de la respuesta (`idRegActuacion`, `procesos`, `paginacion`...), o el portal de publicaciones anuncia resultados que no se reconocen | `RespuestaInesperada` (subclase de `ErrorFuente`) | Igual que la anterior, y además no se tolera al leer la ficha ni los documentos: el radicado queda en `ERROR`, nada se guarda a medias y el monitor abre un issue |
 | 429 / 5xx / red, reintentos agotados | `FuenteNoDisponible` | El radicado y el resto del lote quedan `OMITIDO`; la web responde 503 |
 | Cortacircuito abierto | `CircuitoAbierto` (subclase de la anterior) | Igual que la anterior, sin tocar la red |
 | Tope diario | `PresupuestoAgotado` | Igual: se pospone el lote |
@@ -342,8 +392,10 @@ disponible o presupuesto agotado, 3 no encontrado.
 | Decisión | Alternativa | Por qué |
 | --- | --- | --- |
 | Cliente **sincrónico** | `asyncio` + `httpx.AsyncClient` | La cortesía impone una solicitud a la vez; la concurrencia no aporta y complica pruebas y operación |
-| `dataclasses` de la biblioteca estándar | `pydantic` | Menos dependencias y ruedas que instalar en Windows; el traductor (`analizador.py`) valida lo que importa |
-| `argparse` y `http.server` | `typer`, FastAPI/Flask | Cero dependencias nuevas; el número de comandos y endpoints es pequeño y la interfaz es local |
+| `dataclasses` de la biblioteca estándar | `pydantic` | Menos dependencias; el traductor (`analizador.py`) exige las claves de las que depende y valida lo que importa |
+| `argparse` y `http.server` | `typer`, FastAPI/Flask | Cero dependencias nuevas; el número de comandos y endpoints es pequeño y los usuarios son pocos |
+| HTTP Basic con usuarios en una variable de entorno | Sesiones con cookie y tabla de usuarios | Pocos usuarios, sin pantallas de administración que mantener; sobre HTTPS es seguro. El Administrador de Procesos, que sí gestiona usuarios y roles, usa sesiones |
+| Monitor en GitHub Actions | Uptime Kuma, Healthchecks.io | Nada que instalar ni pagar; las alertas llegan como issues que quedan como historial |
 | Página única en JavaScript puro | React/Vue + herramienta de construcción | Un archivo que se sirve tal cual; nada que compilar ni instalar |
 | SQLite sin ORM | SQLAlchemy, JSON plano | Un archivo, transacciones, consultas simples; JSON no escala al historial |
 | API JSON del portal | *scraping* del HTML / navegador automatizado | Es lo que el propio portal consume; más ligero para el servidor y para el cliente |
@@ -367,9 +419,13 @@ tests/test_notificadores.py           formato, consola, JSONL, correo (transport
 tests/test_configuracion.py           valores por defecto, TOML parcial, plantilla generada
 tests/test_cli.py                     extremo a extremo con fuente falsa y base temporal; salida UTF-8
 tests/test_web.py                     todos los endpoints sin puertos + servidor HTTP real en un puerto libre
+tests/test_web_seguridad.py           usuarios y hash, 401/429, CSRF y origen, cabeceras, proxy, /api/salud y /api/monitor
 tests/test_publicaciones.py           analizador HTML del portal, patrones de radicado, PDF, cliente, repositorios, servicio e integración
-tests/test_en_vivo.py                 opcional: dos solicitudes reales (variables de entorno)
+tests/test_en_vivo.py                 opcional: tres solicitudes reales (variables de entorno)
 ```
+
+Fuera de `tests/`, la CI construye la imagen, la arranca con un usuario de prueba y la revisa con
+`scripts/vigilar.py`, el mismo script que usan el CD y el monitor.
 
 Los datos de prueba replican la forma exacta observada en la API (nombres de campos,
 espacios finales, `null`, 40 por página, orden descendente) pero con contenido ficticio.

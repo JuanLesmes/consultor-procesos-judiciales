@@ -10,7 +10,7 @@ from consultor_procesos.adaptadores.cpnu.analizador import (
     analizar_pagina_actuaciones,
     analizar_respuesta_busqueda,
 )
-from consultor_procesos.dominio.errores import ErrorFuente
+from consultor_procesos.dominio.errores import ErrorFuente, RespuestaInesperada
 
 
 def test_busqueda_con_resultado():
@@ -30,8 +30,27 @@ def test_busqueda_vacia():
     assert analizar_respuesta_busqueda(dict_busqueda([])) == []
 
 
-def test_busqueda_sin_clave_procesos_se_tolera():
-    assert analizar_respuesta_busqueda({"tipoConsulta": "NumeroRadicacion"}) == []
+def test_busqueda_sin_clave_procesos_solo_se_acepta_con_cero_resultados():
+    assert analizar_respuesta_busqueda({"tipoConsulta": "NumeroRadicacion", "paginacion": {"cantidadRegistros": 0}}) == []
+    with pytest.raises(RespuestaInesperada, match="'procesos'"):
+        analizar_respuesta_busqueda({"tipoConsulta": "NumeroRadicacion"})
+    renombrada = dict_busqueda([dict_proceso()])
+    renombrada["listaProcesos"] = renombrada.pop("procesos")
+    with pytest.raises(RespuestaInesperada):
+        analizar_respuesta_busqueda(renombrada)
+
+
+@pytest.mark.parametrize("clave", ["idProceso", "llaveProceso", "fechaUltimaActuacion", "despacho", "esPrivado"])
+def test_busqueda_con_campo_renombrado_falla_en_voz_alta(clave):
+    proceso = dict_proceso()
+    proceso[clave + "Nuevo"] = proceso.pop(clave)
+    with pytest.raises(RespuestaInesperada, match=clave):
+        analizar_respuesta_busqueda(dict_busqueda([proceso]))
+
+
+def test_busqueda_con_id_de_proceso_invalido():
+    with pytest.raises(RespuestaInesperada, match="idProceso"):
+        analizar_respuesta_busqueda(dict_busqueda([dict_proceso(id_proceso=0)]))
 
 
 def test_busqueda_con_forma_inesperada():
@@ -60,9 +79,50 @@ def test_pagina_de_actuaciones():
     assert segunda.fecha_inicial is None
 
 
-def test_pagina_de_actuaciones_sin_paginacion_ni_lista():
-    pagina = analizar_pagina_actuaciones({"actuaciones": None})
-    assert pagina.actuaciones == () and pagina.total_paginas == 1 and pagina.pagina == 1
+def test_pagina_de_actuaciones_vacia():
+    pagina = analizar_pagina_actuaciones(dict_pagina_actuaciones([], total_paginas=0))
+    assert pagina.actuaciones == () and pagina.total_paginas == 1 and pagina.pagina == 1 and not pagina.hay_mas
+    assert analizar_pagina_actuaciones({"actuaciones": None, "paginacion": {"cantidadPaginas": 0, "pagina": 1}}).actuaciones == ()
+
+
+@pytest.mark.parametrize(
+    "datos",
+    [
+        {"actuaciones": []},
+        {"paginacion": {"cantidadPaginas": 1, "pagina": 1}},
+        {"actuaciones": [], "paginacion": None},
+        {"actuaciones": [], "paginacion": {"paginas": 1}},
+    ],
+)
+def test_pagina_de_actuaciones_sin_lista_o_paginacion_falla(datos):
+    with pytest.raises(RespuestaInesperada):
+        analizar_pagina_actuaciones(datos)
+
+
+@pytest.mark.parametrize("clave", ["idRegActuacion", "consActuacion", "fechaActuacion", "actuacion", "anotacion", "conDocumentos"])
+def test_actuacion_con_campo_renombrado_falla_en_voz_alta(clave):
+    actuacion = dict_actuacion(1, 1)
+    actuacion[clave + "V2"] = actuacion.pop(clave)
+    with pytest.raises(RespuestaInesperada, match=clave):
+        analizar_pagina_actuaciones(dict_pagina_actuaciones([actuacion]))
+
+
+def test_actuacion_sin_identificador_valido_falla():
+    actuacion = dict_actuacion(1, 1)
+    actuacion["idRegActuacion"] = None
+    with pytest.raises(RespuestaInesperada, match="idRegActuacion"):
+        analizar_pagina_actuaciones(dict_pagina_actuaciones([actuacion]))
+
+
+def test_detalle_con_campo_renombrado_falla():
+    detalle = dict_detalle()
+    detalle["codigoDespacho"] = detalle.pop("codDespachoCompleto")
+    with pytest.raises(RespuestaInesperada, match="codDespachoCompleto"):
+        analizar_detalle(detalle, id_proceso=ID_PROCESO)
+
+
+def test_respuesta_inesperada_es_un_error_de_la_fuente():
+    assert issubclass(RespuestaInesperada, ErrorFuente)
 
 
 def test_pagina_de_actuaciones_multiple():

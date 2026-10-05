@@ -66,6 +66,13 @@ class ContadorSolicitudes(Protocol):
 
     def incrementar_contador(self, fecha: date, cantidad: int = 1) -> int: ...
 
+    def incrementar_si_menor(self, fecha: date, maximo: int) -> int | None:
+        """Suma 1 solo si el contador está por debajo de `maximo`, en una operación atómica.
+
+        Devuelve el nuevo valor, o None si ya se había alcanzado el máximo.
+        """
+        ...
+
 
 @runtime_checkable
 class Repositorio(ContadorSolicitudes, Protocol):
@@ -96,6 +103,10 @@ class Repositorio(ContadorSolicitudes, Protocol):
     ) -> list[Novedad]: ...
 
     def contar_pendientes(self, solo_autos: bool = False) -> int: ...
+
+    def contar_pendientes_por_radicado(self) -> dict[str, dict[str, int]]:
+        """{radicado: {"total": n, "autos": m}} de las actuaciones sin revisar, calculado en la base."""
+        ...
 
     def marcar_revisada(self, id_registro: int, revisada: bool = True) -> bool: ...
 

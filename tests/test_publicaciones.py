@@ -107,6 +107,13 @@ class TestAnalizador:
         pagina = analizar_lista(html_lista([], "Mostrando 0 resultados."))
         assert pagina.publicaciones == () and pagina.total == 0
 
+    def test_resultados_anunciados_sin_filas_reconocibles_falla_en_voz_alta(self):
+        from consultor_procesos.dominio.errores import RespuestaInesperada
+
+        html_cambiado = html_lista([ITEM_1]).replace("titulo-publicacion", "titulo-nuevo").replace("tramites", "fila")
+        with pytest.raises(RespuestaInesperada, match="2 resultado"):
+            analizar_lista(html_cambiado)
+
     def test_texto_plano(self):
         assert texto_plano("<p>Hola&nbsp;<b>mundo</b> &amp; m&aacute;s <!-- c --></p>") == "Hola mundo & más"
 

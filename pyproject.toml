@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "consultor-procesos"
-version = "0.2.0"
+version = "0.3.0"
 description = "Vigilancia cortés de procesos judiciales en la Rama Judicial de Colombia (CPNU): detecta autos y actuaciones nuevas sin sobrecargar el portal."
 readme = "README.md"
 requires-python = ">=3.11"

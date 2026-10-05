@@ -23,6 +23,14 @@ class ErrorFuente(ErrorConsultor):
         self.codigo = codigo
 
 
+class RespuestaInesperada(ErrorFuente):
+    """La fuente respondió, pero con una estructura distinta a la conocida (campo renombrado o ausente).
+
+    No se tolera en silencio: una clave renombrada haría que el programa dejara de ver
+    actuaciones sin avisar. La verificación queda en ERROR y el monitor lo reporta.
+    """
+
+
 class FuenteNoDisponible(ErrorFuente):
     """La fuente no respondió correctamente tras agotar los reintentos."""
 

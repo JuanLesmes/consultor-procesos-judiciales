@@ -1,0 +1,69 @@
+# Integración continua: en cada push y pull request corre las pruebas y construye la imagen Docker,
+# la arranca y la revisa con el mismo script que usa el despliegue. Nada de esto toca la Rama Judicial.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    name: Pruebas (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Instalar
+        run: pip install -e ".[dev]"
+      - name: Compilar (errores de sintaxis)
+        run: python -m compileall -q src scripts
+      - name: Pruebas
+        run: python -m pytest -q
+
+  imagen:
+    name: Imagen Docker y prueba de humo
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: pruebas
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir la imagen
+        run: docker build --build-arg COMMIT=${{ github.sha }} -t consultor:ci .
+      - name: Arrancar el contenedor con un usuario de prueba
+        run: |
+          USUARIO=$(echo "clave-de-integracion" | docker run --rm -i consultor:ci consultor-procesos crear-usuario ci --clave-stdin)
+          docker run -d --name consultor -p 127.0.0.1:8770:8770 \
+            -e CONSULTOR_USUARIOS="$USUARIO" -e CONSULTOR_CONTACTO=ci@example.com consultor:ci
+      - name: Revisar con el script del despliegue
+        run: |
+          python3 scripts/vigilar.py http://127.0.0.1:8770 --sin-https \
+            --usuario ci --clave clave-de-integracion --commit ${{ github.sha }} --esperar 60
+      - name: Esperar el healthcheck de Docker
+        run: |
+          for i in $(seq 1 30); do
+            estado=$(docker inspect -f '{{.State.Health.Status}}' consultor)
+            [ "$estado" = "healthy" ] && echo "Contenedor: $estado" && exit 0
+            sleep 3
+          done
+          echo "El contenedor no quedó healthy: $estado"; exit 1
+      - name: Registros del contenedor
+        if: always()
+        run: docker logs consultor || true

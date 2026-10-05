@@ -1,3 +1,4 @@
+# Entorno y compilación
 .venv/
 __pycache__/
 *.pyc
@@ -5,13 +6,17 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+
+# Datos reales: nunca al repositorio (radicados, documentos, respaldos, registros)
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
-novedades.jsonl
-consultor_procesos.log
-consultor_procesos.toml
+datos/
 documentos/
+respaldos/
+novedades.jsonl
+*.log
 
-# Paquetes compilados para instalar sin internet (se regeneran con: pip wheel . -w wheels)
-wheels/
+# Configuración y secretos de cada instalación
+.env
+consultor_procesos.toml

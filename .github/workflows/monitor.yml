@@ -1,0 +1,61 @@
+# Monitor de producción: después de cada verificación programada revisa que el Consultor esté vivo,
+# vigilando, al día y sin errores (por ejemplo, si la Rama Judicial cambió el formato de su API).
+# Si algo falla abre un issue con la etiqueta "monitor" (GitHub le avisa por correo y en la app);
+# cuando todo vuelve a estar bien, lo cierra solo. Mientras no exista CONSULTOR_URL, no hace nada.
+name: Monitor
+
+on:
+  schedule:
+    # Hora de Colombia = UTC-5. Verificaciones a las 07:00, 10:00, 13:00 y 17:00 de lunes a viernes;
+    # se revisa 40 minutos después de cada una.
+    - cron: "40 12,15,18,22 * * 1-5"
+    # Fines de semana: una vez al día (08:00), solo para saber que sigue en pie.
+    - cron: "0 13 * * 0,6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  revisar:
+    name: Revisar producción
+    if: vars.CONSULTOR_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Revisar
+        id: revision
+        continue-on-error: true
+        env:
+          CONSULTOR_MONITOR_USUARIO: ${{ secrets.CONSULTOR_MONITOR_USUARIO }}
+          CONSULTOR_MONITOR_CLAVE: ${{ secrets.CONSULTOR_MONITOR_CLAVE }}
+        run: python3 scripts/vigilar.py "${{ vars.CONSULTOR_URL }}" --informe informe.md --esperar 30
+
+      - name: Abrir o actualizar el aviso
+        if: steps.revision.outcome == 'failure'
+        run: |
+          numero=$(gh issue list --label monitor --state open --json number --jq '.[0].number // empty')
+          if [ -z "$numero" ]; then
+            gh label create monitor --color B60205 --description "Alertas del monitor de producción" 2>/dev/null || true
+            gh issue create --title "Producción: el Consultor de Procesos necesita atención" --label monitor --body-file informe.md
+          else
+            gh issue comment "$numero" --body-file informe.md
+          fi
+          exit 1
+
+      - name: Cerrar el aviso si ya se resolvió
+        if: steps.revision.outcome == 'success'
+        run: |
+          numero=$(gh issue list --label monitor --state open --json number --jq '.[0].number // empty')
+          if [ -n "$numero" ]; then
+            gh issue close "$numero" --comment "Resuelto el $(date -u '+%Y-%m-%d %H:%M') UTC: la revisión volvió a estar en orden."
+          fi

@@ -5,7 +5,8 @@
 base_datos = "consultor_procesos.sqlite"
 # Identifíquese ante la Rama Judicial: un agente honesto con contacto es la mejor defensa
 # contra bloqueos, porque permite que el administrador le escriba antes de vetarlo.
-agente_usuario = "ConsultorDeProcesos/0.1 (vigilancia de radicados propios; contacto: su-correo@ejemplo.com)"
+# En el servidor es más cómodo definir CONSULTOR_CONTACTO en el .env, que tiene prioridad.
+agente_usuario = "ConsultorDeProcesos/{version} (vigilancia de radicados propios; contacto: su-correo@ejemplo.com)"
 nivel_registro = "INFO"
 # archivo_registro = "consultor_procesos.log"
 directorio_documentos = "documentos"   # caché local de los PDF descargados
@@ -28,8 +29,7 @@ hora_fin = 24
 [verificacion]
 dias_gracia = 5                # si la última actuación es reciente, se releen actuaciones aunque la fecha no cambie
 horas_refresco_completo = 24   # cada cuántas horas se releen actuaciones aunque nada haya cambiado
-max_paginas_inicial = 20       # páginas (de 40) que se leen al registrar un radicado
-max_paginas_incremental = 3    # páginas que se leen en verificaciones posteriores
+max_paginas_inicial = 20       # tope de páginas (de 40) por lectura; las siguientes leen hasta empalmar con lo conocido
 palabras_clave = ["AUTO"]      # añada p. ej. "SENTENCIA", "FIJACION ESTADO" si quiere alertas de más tipos
 notificar_existentes = false   # true para recibir también las actuaciones ya existentes al agregar un radicado
 listar_documentos_de_autos = true   # al detectar un auto con documentos, pedir la lista (1 solicitud) para enlazar el PDF
@@ -53,14 +53,13 @@ dias = ["lun", "mar", "mie", "jue", "vie"]
 hasta = "18:00"                # después de esta hora no se ejecuta ninguna verificación atrasada
 fluctuacion_minutos = 5        # cada verificación arranca hasta 5 min después de la hora, al azar
 festivos = []                  # fechas "AAAA-MM-DD" en las que no se verifica
-iniciar_con_interfaz = true    # al abrir la interfaz ('web'), la vigilancia arranca sola con este horario
+iniciar_con_interfaz = true    # al arrancar el servidor ('web'), la vigilancia arranca sola con este horario
 intervalo_minutos = 240        # solo si horas = []: verificar cada tantos minutos
 jitter_fraccion = 0.2          # +/- 20 % aleatorio sobre el intervalo
 
 [web]
-host = "127.0.0.1"          # solo accesible desde este equipo
-puerto = 8765
-abrir_navegador = true
+host = "127.0.0.1"          # en el contenedor se usa --host 0.0.0.0 detrás de Caddy (HTTPS)
+puerto = 8770
 segundos_actualizacion = 30
 
 [notificaciones]

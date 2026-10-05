@@ -1,0 +1,13 @@
+# Caddy obtiene y renueva solo el certificado HTTPS del dominio indicado en .env (DOMINIO)
+# y redirige http:// a https://. El Consultor recibe las peticiones en la red interna de Docker.
+{$DOMINIO} {
+	encode zstd gzip
+	request_body {
+		max_size 1MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy consultor:8770
+}

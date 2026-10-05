@@ -8,6 +8,11 @@ Formas observadas en la API (septiembre de 2026):
 * Actuaciones: {"actuaciones": [{idRegActuacion, consActuacion, fechaActuacion, actuacion,
   anotacion, fechaRegistro, conDocumentos, ...}], "paginacion": {cantidadRegistros,
   registrosPagina, cantidadPaginas, pagina}}  (40 por página, más recientes primero)
+
+Las claves de las que depende la vigilancia son obligatorias: si la API renombra o deja de
+enviar una (por ejemplo `idRegActuacion`), se lanza `RespuestaInesperada` en vez de seguir con
+valores por defecto. Un campo renombrado convertido en 0 o en lista vacía haría que el programa
+dejara de ver actuaciones sin avisar. Los valores pueden venir nulos; la clave no puede faltar.
 """
 
 from __future__ import annotations
@@ -15,7 +20,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from ...dominio.errores import ErrorFuente
+from ...dominio.errores import RespuestaInesperada
 from ...dominio.modelos import Actuacion, DetalleProceso, Documento, PaginaActuaciones, Proceso
 from ...dominio.reglas import validar_radicado
 
@@ -31,6 +36,13 @@ __all__ = [
     "analizar_documento",
     "analizar_documentos",
 ]
+
+# Claves que la API siempre envía (aunque sea con valor nulo) y de las que depende la vigilancia.
+CLAVES_PROCESO = ("idProceso", "llaveProceso", "fechaUltimaActuacion", "despacho", "esPrivado")
+CLAVES_ACTUACION = ("idRegActuacion", "consActuacion", "fechaActuacion", "actuacion", "anotacion", "conDocumentos")
+CLAVES_PAGINACION = ("cantidadPaginas", "pagina")
+CLAVES_DETALLE = ("llaveProceso", "despacho", "ponente", "tipoProceso", "claseProceso", "codDespachoCompleto")
+CLAVES_ID_DOCUMENTO = ("idRegDocumento", "idDocumento", "id")
 
 
 def analizar_fecha_hora(valor: Any) -> datetime | None:
@@ -60,13 +72,30 @@ def _entero(valor: Any, predeterminado: int = 0) -> int:
 
 def _objeto(datos: Any, contexto: str) -> dict:
     if not isinstance(datos, dict):
-        raise ErrorFuente(f"Respuesta inesperada de la fuente en {contexto}: se esperaba un objeto JSON.")
+        raise RespuestaInesperada(f"Respuesta inesperada de la fuente en {contexto}: se esperaba un objeto JSON.")
     return datos
 
 
+def _exigir_claves(datos: dict, claves: tuple[str, ...], contexto: str) -> None:
+    faltantes = [clave for clave in claves if clave not in datos]
+    if faltantes:
+        raise RespuestaInesperada(
+            f"La respuesta de la fuente en {contexto} no trae {', '.join(repr(c) for c in faltantes)}; "
+            "probablemente la API cambió y hay que ajustar el analizador."
+        )
+
+
+def _identificador(datos: dict, clave: str, contexto: str) -> int:
+    valor = _entero(datos.get(clave))
+    if valor <= 0:
+        raise RespuestaInesperada(f"La respuesta de la fuente en {contexto} trae {clave!r} inválido: {datos.get(clave)!r}.")
+    return valor
+
+
 def analizar_proceso(datos: dict) -> Proceso:
+    _exigir_claves(datos, CLAVES_PROCESO, "la búsqueda por radicado")
     return Proceso(
-        id_proceso=_entero(datos.get("idProceso")),
+        id_proceso=_identificador(datos, "idProceso", "la búsqueda por radicado"),
         radicado=_texto(datos.get("llaveProceso")),
         despacho=_texto(datos.get("despacho")),
         departamento=_texto(datos.get("departamento")),
@@ -81,14 +110,20 @@ def analizar_respuesta_busqueda(datos: Any) -> list[Proceso]:
     objeto = _objeto(datos, "la búsqueda por radicado")
     procesos = objeto.get("procesos")
     if procesos is None:
-        return []
+        # Sin la lista solo se acepta una respuesta que declare cero resultados; en otro caso la
+        # clave cambió de nombre y tratarla como "no encontrado" escondería el problema.
+        paginacion = objeto.get("paginacion")
+        if isinstance(paginacion, dict) and _entero(paginacion.get("cantidadRegistros"), -1) == 0:
+            return []
+        raise RespuestaInesperada("La respuesta de la búsqueda por radicado no trae 'procesos'; probablemente la API cambió.")
     if not isinstance(procesos, list):
-        raise ErrorFuente("Respuesta inesperada de la fuente: 'procesos' no es una lista.")
+        raise RespuestaInesperada("Respuesta inesperada de la fuente: 'procesos' no es una lista.")
     return [analizar_proceso(p) for p in procesos if isinstance(p, dict)]
 
 
 def analizar_detalle(datos: Any, id_proceso: int) -> DetalleProceso:
     objeto = _objeto(datos, "el detalle del proceso")
+    _exigir_claves(objeto, CLAVES_DETALLE, "el detalle del proceso")
     return DetalleProceso(
         id_proceso=id_proceso,
         radicado=_texto(objeto.get("llaveProceso")),
@@ -108,8 +143,9 @@ def analizar_detalle(datos: Any, id_proceso: int) -> DetalleProceso:
 
 
 def analizar_actuacion(datos: dict, id_proceso: int | None = None) -> Actuacion:
+    _exigir_claves(datos, CLAVES_ACTUACION, "las actuaciones")
     return Actuacion(
-        id_registro=_entero(datos.get("idRegActuacion")),
+        id_registro=_identificador(datos, "idRegActuacion", "las actuaciones"),
         radicado=_texto(datos.get("llaveProceso")),
         consecutivo=_entero(datos.get("consActuacion")),
         actuacion=_texto(datos.get("actuacion")),
@@ -125,13 +161,15 @@ def analizar_actuacion(datos: dict, id_proceso: int | None = None) -> Actuacion:
 
 def analizar_pagina_actuaciones(datos: Any, id_proceso: int | None = None) -> PaginaActuaciones:
     objeto = _objeto(datos, "las actuaciones")
+    _exigir_claves(objeto, ("actuaciones", "paginacion"), "las actuaciones")
     lista = objeto.get("actuaciones") or []
     if not isinstance(lista, list):
-        raise ErrorFuente("Respuesta inesperada de la fuente: 'actuaciones' no es una lista.")
+        raise RespuestaInesperada("Respuesta inesperada de la fuente: 'actuaciones' no es una lista.")
     actuaciones = tuple(analizar_actuacion(a, id_proceso=id_proceso) for a in lista if isinstance(a, dict))
     paginacion = objeto.get("paginacion")
     if not isinstance(paginacion, dict):
-        paginacion = {}
+        raise RespuestaInesperada("Respuesta inesperada de la fuente: 'paginacion' no es un objeto.")
+    _exigir_claves(paginacion, CLAVES_PAGINACION, "la paginación de las actuaciones")
     return PaginaActuaciones(
         actuaciones=actuaciones,
         pagina=max(1, _entero(paginacion.get("pagina"), 1)),
@@ -143,7 +181,12 @@ def analizar_pagina_actuaciones(datos: Any, id_proceso: int | None = None) -> Pa
 
 def analizar_documento(datos: dict, id_registro: int) -> Documento | None:
     """Documento de una actuación. El portal usa `idRegDocumento` y `nombre`; el resto es opcional."""
-    identificador = _entero(datos.get("idRegDocumento", datos.get("idDocumento", datos.get("id"))), 0)
+    clave = next((c for c in CLAVES_ID_DOCUMENTO if c in datos), None)
+    if clave is None:
+        raise RespuestaInesperada(
+            "Un documento de la actuación no trae identificador ('idRegDocumento'); probablemente la API cambió."
+        )
+    identificador = _entero(datos.get(clave), 0)
     if not identificador:
         return None
     tamano_bruto = datos.get("tamano", datos.get("tamanio", datos.get("size")))
@@ -163,8 +206,10 @@ def analizar_documentos(datos: Any, id_registro: int) -> list[Documento]:
         return []
     lista = datos
     if isinstance(datos, dict):
+        if datos and "documentos" not in datos and "documentosActuacion" not in datos:
+            raise RespuestaInesperada("La lista de documentos llegó con una forma desconocida; probablemente la API cambió.")
         lista = datos.get("documentos") or datos.get("documentosActuacion") or []
     if not isinstance(lista, list):
-        raise ErrorFuente("Respuesta inesperada de la fuente: la lista de documentos no es una lista.")
+        raise RespuestaInesperada("Respuesta inesperada de la fuente: la lista de documentos no es una lista.")
     documentos = (analizar_documento(d, id_registro) for d in lista if isinstance(d, dict))
     return [d for d in documentos if d is not None]

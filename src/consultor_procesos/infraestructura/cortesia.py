@@ -140,7 +140,12 @@ class PoliticaReintentos:
 
 
 class Cortacircuito:
-    """Cortacircuito clásico: CERRADO -> ABIERTO (tras N fallos) -> SEMIABIERTO (una sonda) -> CERRADO."""
+    """Cortacircuito clásico: CERRADO -> ABIERTO (tras N fallos) -> SEMIABIERTO (una sonda) -> CERRADO.
+
+    En SEMIABIERTO pasa una sola solicitud de prueba. Quien la toma debe resolverla con
+    `registrar_exito`, `registrar_fallo` o `liberar_sonda`; si aun así quedara sin resolver,
+    tras `segundos_abierto` se permite otra sonda, para que el circuito nunca quede bloqueado.
+    """
 
     CERRADO = "CERRADO"
     ABIERTO = "ABIERTO"
@@ -156,6 +161,7 @@ class Cortacircuito:
         self._fallos = 0
         self._abierto_en = 0.0
         self._sonda_en_curso = False
+        self._sonda_desde = 0.0
         self._candado = threading.Lock()
 
     @property
@@ -178,10 +184,19 @@ class Cortacircuito:
             self._actualizar()
             if self._estado == self.CERRADO:
                 return True
-            if self._estado == self.SEMIABIERTO and not self._sonda_en_curso:
+            if self._estado != self.SEMIABIERTO:
+                return False
+            sonda_vencida = self._sonda_en_curso and self._reloj() - self._sonda_desde >= self.segundos_abierto
+            if not self._sonda_en_curso or sonda_vencida:
                 self._sonda_en_curso = True
+                self._sonda_desde = self._reloj()
                 return True
             return False
+
+    def liberar_sonda(self) -> None:
+        """La sonda terminó sin poder concluir nada sobre la fuente (p. ej. se agotó el presupuesto antes de enviarla)."""
+        with self._candado:
+            self._sonda_en_curso = False
 
     def segundos_restantes(self) -> float:
         with self._candado:
@@ -210,17 +225,31 @@ class ContadorMemoria:
 
     def __init__(self) -> None:
         self._valores: dict[date, int] = {}
+        self._candado = threading.Lock()
 
     def obtener_contador(self, fecha: date) -> int:
         return self._valores.get(fecha, 0)
 
     def incrementar_contador(self, fecha: date, cantidad: int = 1) -> int:
-        self._valores[fecha] = self._valores.get(fecha, 0) + cantidad
-        return self._valores[fecha]
+        with self._candado:
+            self._valores[fecha] = self._valores.get(fecha, 0) + cantidad
+            return self._valores[fecha]
+
+    def incrementar_si_menor(self, fecha: date, maximo: int) -> int | None:
+        with self._candado:
+            actual = self._valores.get(fecha, 0)
+            if actual >= maximo:
+                return None
+            self._valores[fecha] = actual + 1
+            return actual + 1
 
 
 class PresupuestoDiario:
-    """Tope duro de solicitudes por día natural, respaldado por un contador persistente."""
+    """Tope duro de solicitudes por día natural, respaldado por un contador persistente.
+
+    Comprobar y sumar es una sola operación atómica del contador (`incrementar_si_menor`), así
+    que dos hilos o dos procesos sobre la misma base no pueden pasarse del tope.
+    """
 
     def __init__(self, maximo: int, contador: ContadorSolicitudes, hoy: Callable[[], date] = date.today) -> None:
         if maximo < 1:
@@ -237,12 +266,12 @@ class PresupuestoDiario:
 
     def consumir(self) -> int:
         fecha = self._hoy()
-        usado = self._contador.obtener_contador(fecha)
-        if usado >= self.maximo:
+        usado = self._contador.incrementar_si_menor(fecha, self.maximo)
+        if usado is None:
             raise PresupuestoAgotado(
                 f"Se alcanzó el presupuesto diario de {self.maximo} solicitudes ({fecha.isoformat()})."
             )
-        return self._contador.incrementar_contador(fecha, 1)
+        return usado
 
 
 class VentanaHoraria:

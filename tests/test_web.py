@@ -288,7 +288,8 @@ def test_servidor_http_real(aplicacion: AplicacionWeb, fuente: FuenteFalsa):
     servidor = ServidorWeb(aplicacion, host="127.0.0.1", puerto=0)
     host, puerto = servidor.iniciar()
     try:
-        with httpx.Client(base_url=f"http://{host}:{puerto}", timeout=5) as http:
+        cabeceras = {"X-Requested-With": "XMLHttpRequest"}
+        with httpx.Client(base_url=f"http://{host}:{puerto}", timeout=5, headers=cabeceras) as http:
             pagina = http.get("/")
             assert pagina.status_code == 200 and "Consultor de Procesos" in pagina.text
             assert http.get("/api/estado").json()["vigilados"] == []

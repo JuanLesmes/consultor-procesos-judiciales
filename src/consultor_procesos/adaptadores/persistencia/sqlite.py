@@ -462,6 +462,16 @@ class RepositorioSQLite:
         return int(self._conexion.execute(consulta).fetchone()["n"])
 
     @_sincronizado
+    def contar_pendientes_por_radicado(self) -> dict[str, dict[str, int]]:
+        filas = self._conexion.execute(
+            """
+            SELECT radicado, COUNT(*) AS total, COALESCE(SUM(es_auto), 0) AS autos
+            FROM actuaciones_vistas WHERE revisada = 0 GROUP BY radicado
+            """
+        )
+        return {fila["radicado"]: {"total": int(fila["total"]), "autos": int(fila["autos"])} for fila in filas}
+
+    @_sincronizado
     def marcar_revisada(self, id_registro: int, revisada: bool = True) -> bool:
         cursor = self._conexion.execute(
             "UPDATE actuaciones_vistas SET revisada = ? WHERE id_registro = ?",
@@ -660,18 +670,20 @@ class RepositorioSQLite:
         self._conexion.commit()
         return insertadas
 
-    def _filas_a_coincidencias(self, filas: Iterable[sqlite3.Row]) -> list[CoincidenciaPublicacion]:
-        resultado: list[CoincidenciaPublicacion] = []
+    def _filas_a_coincidencias(self, filas: list[sqlite3.Row]) -> list[CoincidenciaPublicacion]:
+        # Una sola consulta para todas las publicaciones referidas (antes era una por publicación).
+        identificadores = sorted({fila["id_publicacion"] for fila in filas})
         publicaciones: dict[str, Publicacion] = {}
+        for inicio in range(0, len(identificadores), 500):
+            lote = identificadores[inicio : inicio + 500]
+            marcas = ", ".join("?" for _ in lote)
+            for registro in self._conexion.execute(f"SELECT * FROM publicaciones WHERE id_publicacion IN ({marcas})", lote):
+                publicaciones[registro["id_publicacion"]] = self._fila_a_publicacion(registro)
+        resultado: list[CoincidenciaPublicacion] = []
         for fila in filas:
             identificador = fila["id_publicacion"]
             if identificador not in publicaciones:
-                registro = self._conexion.execute(
-                    "SELECT * FROM publicaciones WHERE id_publicacion = ?", (identificador,)
-                ).fetchone()
-                if registro is None:
-                    continue
-                publicaciones[identificador] = self._fila_a_publicacion(registro)
+                continue
             resultado.append(
                 CoincidenciaPublicacion(
                     publicacion=publicaciones[identificador],
@@ -803,3 +815,31 @@ class RepositorioSQLite:
         )
         self._conexion.commit()
         return self.obtener_contador(fecha)
+
+    @_sincronizado
+    def incrementar_si_menor(self, fecha: date, maximo: int) -> int | None:
+        # Una sola sentencia comprueba y suma: también es atómica entre procesos que compartan la base.
+        cursor = self._conexion.execute(
+            """
+            INSERT INTO contadores_solicitudes (fecha, cantidad) VALUES (?, 1)
+            ON CONFLICT(fecha) DO UPDATE SET cantidad = cantidad + 1 WHERE cantidad < ?
+            """,
+            (fecha.isoformat(), maximo),
+        )
+        sumado = cursor.rowcount > 0 and maximo >= 1
+        self._conexion.commit()
+        return self.obtener_contador(fecha) if sumado else None
+
+    # --- respaldo -------------------------------------------------------------------------
+
+    @_sincronizado
+    def respaldar(self, destino: str | Path) -> Path:
+        """Copia consistente de la base (API de respaldo de SQLite), segura con el programa en marcha."""
+        destino = Path(destino)
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        copia = sqlite3.connect(str(destino))
+        try:
+            self._conexion.backup(copia)
+        finally:
+            copia.close()
+        return destino

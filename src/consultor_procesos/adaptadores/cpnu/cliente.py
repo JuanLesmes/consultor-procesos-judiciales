@@ -12,7 +12,8 @@ from urllib.parse import unquote
 
 import httpx
 
-from ...dominio.errores import ErrorFuente
+from ... import __version__
+from ...dominio.errores import RespuestaInesperada
 from ...dominio.modelos import DescargaDocumento, DetalleProceso, Documento, PaginaActuaciones, Proceso
 from ...enlaces import URL_BASE_CPNU
 from ...infraestructura.cortesia import Cortacircuito, Dormir, LimitadorTasa, PoliticaReintentos, PresupuestoDiario
@@ -26,8 +27,8 @@ from .analizador import (
 )
 
 AGENTE_USUARIO_PREDETERMINADO = (
-    "ConsultorDeProcesos/0.1 (vigilancia de radicados propios; "
-    "configure general.agente_usuario con un correo de contacto)"
+    f"ConsultorDeProcesos/{__version__} (vigilancia de radicados propios; "
+    "configure CONSULTOR_CONTACTO con un correo de contacto)"
 )
 
 _RE_NOMBRE_EXTENDIDO = re.compile(r"filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)")
@@ -127,7 +128,7 @@ class ClienteCPNU:
         respuesta = self._solicitante.get(ruta, cabeceras={"Accept": "*/*"})
         tipo = respuesta.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
         if tipo == "application/json":
-            raise ErrorFuente(
+            raise RespuestaInesperada(
                 f"La fuente devolvió JSON en lugar del archivo para el documento {id_documento}; "
                 "el formato de descarga cambió y hay que ajustar el cliente."
             )

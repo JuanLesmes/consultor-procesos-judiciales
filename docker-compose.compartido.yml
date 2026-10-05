@@ -1,0 +1,19 @@
+# Variante para un servidor que ya tiene el Administrador de Procesos con su propio Caddy en 80/443.
+# El Consultor no levanta otro Caddy: se une a la red del Administrador y ese Caddy le reenvía su dominio.
+#
+# En .env del Consultor:
+#   COMPOSE_PROFILES=
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.compartido.yml
+#   RED_PROXY=procesos_default        (red del Administrador: "<carpeta>_default"; véala con `docker network ls`)
+#
+# Y en el Caddyfile del Administrador, un bloque más (ver docs/DESPLIEGUE.md, sección 3B).
+services:
+  consultor:
+    networks:
+      - default
+      - proxy
+
+networks:
+  proxy:
+    external: true
+    name: ${RED_PROXY:-procesos_default}

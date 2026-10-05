@@ -264,3 +264,76 @@ def test_publicaciones_comando(tmp_path: Path, config_prueba: Path, fuente: Fuen
 def test_publicaciones_desactivadas(ejecutar: Ejecutor):
     codigo, texto = ejecutar("publicaciones")
     assert codigo == cli.CODIGO_USO and "desactivada" in texto
+
+
+# --- comandos para el servidor --------------------------------------------------------------
+
+
+def test_crear_usuario_genera_una_linea_verificable(monkeypatch, capsys):
+    from consultor_procesos.adaptadores.web.seguridad import leer_usuarios, verificar_hash
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("una-clave-larga\n"))
+    salida = io.StringIO()
+    assert cli.main(["crear-usuario", "ana", "--clave-stdin"], salida=salida) == cli.CODIGO_OK
+    usuarios = leer_usuarios(salida.getvalue().strip())
+    assert list(usuarios) == ["ana"] and verificar_hash("una-clave-larga", usuarios["ana"])
+    assert "CONSULTOR_USUARIOS" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("nombre, clave", [("ana", "corta"), ("ana maría", "una-clave-larga"), ("a:b", "una-clave-larga")])
+def test_crear_usuario_rechaza_datos_invalidos(monkeypatch, nombre, clave):
+    monkeypatch.setattr("sys.stdin", io.StringIO(clave + "\n"))
+    assert cli.main(["crear-usuario", nombre, "--clave-stdin"], salida=io.StringIO()) == cli.CODIGO_USO
+
+
+def test_web_no_escucha_en_la_red_sin_usuarios(ejecutar: Ejecutor, monkeypatch, capsys):
+    monkeypatch.delenv("CONSULTOR_USUARIOS", raising=False)
+    codigo, _ = ejecutar("web", "--host", "0.0.0.0", "--puerto", "0", "--sin-vigilar")
+    assert codigo == cli.CODIGO_USO and "crear-usuario" in capsys.readouterr().err
+
+
+def test_web_rechaza_usuarios_mal_escritos(ejecutar: Ejecutor, monkeypatch, capsys):
+    monkeypatch.setenv("CONSULTOR_USUARIOS", "ana:clave-en-claro")
+    codigo, _ = ejecutar("web", "--puerto", "0", "--sin-vigilar")
+    assert codigo == cli.CODIGO_USO and "CONSULTOR_USUARIOS" in capsys.readouterr().err
+
+
+def test_respaldar_conserva_los_ultimos(ejecutar: Ejecutor, tmp_path: Path):
+    ejecutar("agregar", RADICADO, "--alias", "Demo")
+    destino = tmp_path / "respaldos"
+    for antiguo in ("consultor-20200101-000000.sqlite", "consultor-20200102-000000.sqlite"):
+        destino.mkdir(exist_ok=True)
+        (destino / antiguo).write_bytes(b"viejo")
+    codigo, texto = ejecutar("respaldar", "--destino", str(destino), "--conservar", "2")
+    assert codigo == 0 and "Respaldo escrito" in texto
+    copias = sorted(p.name for p in destino.iterdir())
+    assert len(copias) == 2 and copias[0] == "consultor-20200102-000000.sqlite"
+    from consultor_procesos.adaptadores.persistencia.sqlite import RepositorioSQLite
+
+    with RepositorioSQLite(destino / copias[1]) as copia:
+        assert copia.obtener_vigilado(RADICADO).alias == "Demo"
+
+
+def test_agente_usuario_lleva_version_y_contacto(monkeypatch):
+    from consultor_procesos import __version__
+    from consultor_procesos.configuracion import Configuracion, agente_usuario, tiene_contacto
+
+    monkeypatch.delenv("CONSULTOR_CONTACTO", raising=False)
+    sin_contacto = agente_usuario(Configuracion())
+    assert f"ConsultorDeProcesos/{__version__} " in sin_contacto and not tiene_contacto(sin_contacto)
+    assert cli.avisos_de_configuracion(Configuracion())
+    monkeypatch.setenv("CONSULTOR_CONTACTO", "firma@ejemplo.com")
+    con_contacto = agente_usuario(Configuracion())
+    assert con_contacto.endswith("contacto: firma@ejemplo.com)") and tiene_contacto(con_contacto)
+    assert cli.avisos_de_configuracion(Configuracion()) == []
+
+
+def test_configuracion_desde_variable_de_entorno(tmp_path: Path, monkeypatch):
+    from consultor_procesos.configuracion import cargar_configuracion
+
+    ruta = tmp_path / "otra.toml"
+    ruta.write_text("[web]\npuerto = 9999\n", encoding="utf-8")
+    monkeypatch.setenv("CONSULTOR_CONFIG", str(ruta))
+    assert cargar_configuracion().web.puerto == 9999
+    monkeypatch.setenv("CONSULTOR_CONFIG", str(tmp_path / "no-existe.toml"))
+    assert cargar_configuracion().web.puerto == 8770, "sin archivo: valores por defecto"

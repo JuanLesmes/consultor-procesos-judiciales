@@ -1,0 +1,59 @@
+# Consultor de Procesos en un servidor: la aplicación y, si se activa el perfil "proxy", Caddy con HTTPS.
+# Todo lo que cambia de una instalación a otra va en .env (copie .env.ejemplo).
+#
+#   Probar en su computador:   docker compose up --build        -> http://127.0.0.1:8770
+#   En el servidor lo arranca el despliegue automático (despliegue/desplegar.sh).
+name: consultor
+
+services:
+  consultor:
+    # El despliegue fija CONSULTOR_IMAGEN en .env con la imagen publicada en GHCR; en local se construye.
+    image: ${CONSULTOR_IMAGEN:-consultor-procesos:local}
+    build:
+      context: .
+      args:
+        COMMIT: ${CONSULTOR_COMMIT:-local}
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: ${TZ:-America/Bogota}
+    volumes:
+      - ./datos:/datos
+    # Solo en la interfaz local del servidor: sirve para la verificación del despliegue y para entrar
+    # por un túnel SSH. Desde internet se entra únicamente por Caddy (HTTPS).
+    ports:
+      - "127.0.0.1:${CONSULTOR_PUERTO_LOCAL:-8770}:8770"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2
+    profiles: ["proxy"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_datos:/data
+      - caddy_config:/config
+    depends_on:
+      - consultor
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy_datos:
+  caddy_config:

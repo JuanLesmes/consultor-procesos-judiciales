@@ -8,7 +8,10 @@ Estrategia de verificación (pensada para gastar el mínimo de solicitudes):
    menos de `horas_refresco_completo` que se leyeron actuaciones, se termina ahí: una
    sola solicitud y estado SIN_CAMBIOS.
 3. Si algo cambió (o toca el refresco periódico) se leen las actuaciones página a página,
-   más recientes primero, deteniéndose en la primera ya conocida.
+   más recientes primero, deteniéndose en la primera ya conocida. No hay un tope menor para
+   las lecturas incrementales: si entre dos verificaciones llegaron muchas actuaciones, se
+   sigue leyendo hasta empalmar con lo conocido (hasta `max_paginas_inicial`), para que no
+   queden huecos. Si ni así se empalma, el resultado lo advierte.
 4. Las actuaciones nuevas se evalúan con el detector de autos, se guardan y se notifican.
    Para los autos que traen documentos se pide la lista (una solicitud por auto) para que
    la notificación enlace directamente al PDF. La primera lectura de un radicado es la
@@ -25,7 +28,7 @@ import logging
 import mimetypes
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -36,6 +39,7 @@ from ..dominio.errores import (
     FuenteNoDisponible,
     PresupuestoAgotado,
     ProcesoNoEncontrado,
+    RespuestaInesperada,
 )
 from ..dominio.modelos import (
     Actuacion,
@@ -71,12 +75,46 @@ log = logging.getLogger(__name__)
 class OpcionesVerificacion:
     dias_gracia: int = 5
     horas_refresco_completo: int = 24
-    max_paginas_inicial: int = 20
-    max_paginas_incremental: int = 3
+    max_paginas_inicial: int = 20  # tope de páginas (de 40) por lectura, en la línea base y en las siguientes
     pausa_entre_procesos_segundos: float = 3.0
     notificar_existentes: bool = False
     listar_documentos_de_autos: bool = True
     descubrir_despachos: bool = True  # leer la ficha (tipo, clase, ponente, código de despacho) en la línea base y al haber cambios
+
+
+@dataclass
+class LecturaActuaciones:
+    actuaciones: list[Actuacion] = field(default_factory=list)
+    # False si se agotó el máximo de páginas sin llegar al final ni a una actuación conocida.
+    completa: bool = True
+    paginas: int = 0
+
+
+def leer_actuaciones(
+    fuente: FuenteProcesos,
+    id_proceso: int,
+    max_paginas: int,
+    detener_si: Callable[[Actuacion], bool] | None = None,
+) -> LecturaActuaciones:
+    """Lee las páginas de actuaciones (más recientes primero) hasta `detener_si`, el final o `max_paginas`."""
+    lectura = LecturaActuaciones()
+    limite = max(1, max_paginas)
+    while lectura.paginas < limite:
+        lectura.paginas += 1
+        resultado = fuente.obtener_actuaciones(id_proceso, lectura.paginas)
+        for actuacion in resultado.actuaciones:
+            if detener_si is not None and detener_si(actuacion):
+                return lectura
+            lectura.actuaciones.append(actuacion)
+        if not resultado.hay_mas or not resultado.actuaciones:
+            return lectura
+    lectura.completa = False
+    log.warning(
+        "Se alcanzó el máximo de %d páginas para el proceso %s; puede haber actuaciones sin leer.",
+        limite,
+        id_proceso,
+    )
+    return lectura
 
 
 def recorrer_actuaciones(
@@ -85,23 +123,8 @@ def recorrer_actuaciones(
     max_paginas: int,
     detener_si: Callable[[Actuacion], bool] | None = None,
 ) -> Iterator[Actuacion]:
-    """Recorre las páginas de actuaciones (más recientes primero) hasta `detener_si` o `max_paginas`."""
-    pagina = 1
-    limite = max(1, max_paginas)
-    while pagina <= limite:
-        resultado = fuente.obtener_actuaciones(id_proceso, pagina)
-        for actuacion in resultado.actuaciones:
-            if detener_si is not None and detener_si(actuacion):
-                return
-            yield actuacion
-        if not resultado.hay_mas or not resultado.actuaciones:
-            return
-        pagina += 1
-    log.warning(
-        "Se alcanzó el máximo de %d páginas para el proceso %s; puede haber actuaciones antiguas sin leer.",
-        limite,
-        id_proceso,
-    )
+    """Como `leer_actuaciones`, pero devuelve solo las actuaciones."""
+    yield from leer_actuaciones(fuente, id_proceso, max_paginas, detener_si).actuaciones
 
 
 def tipo_contenido_por_nombre(nombre: str) -> str:
@@ -352,13 +375,15 @@ class ServicioVigilancia:
 
         conocidos = self._repositorio.ids_actuaciones_conocidas(vigilado.radicado)
         es_linea_base = not vigilado.inicializado or not conocidos
-        max_paginas = self._opciones.max_paginas_inicial if es_linea_base else self._opciones.max_paginas_incremental
         detener = None if es_linea_base else (lambda a: a.id_registro in conocidos)
         despachos = {p.id_proceso: p.despacho for p in publicos}
 
         recolectadas: list[Actuacion] = []
+        incompleta = False
         for proceso in publicos:
-            recolectadas.extend(recorrer_actuaciones(self._fuente, proceso.id_proceso, max_paginas, detener))
+            lectura = leer_actuaciones(self._fuente, proceso.id_proceso, self._opciones.max_paginas_inicial, detener)
+            recolectadas.extend(lectura.actuaciones)
+            incompleta = incompleta or not lectura.completa
         nuevas = calcular_novedades(recolectadas, conocidos)
         novedades = [self._detector.evaluar(a, despachos.get(a.id_proceso or -1, "")) for a in nuevas]
         if not es_linea_base and self._opciones.listar_documentos_de_autos:
@@ -394,6 +419,12 @@ class ServicioVigilancia:
             mensaje = f"{len(novedades)} actuación(es) nueva(s), {autos} auto(s)."
         else:
             mensaje = "Actuaciones revisadas; sin novedades."
+        if incompleta:
+            mensaje += (
+                f" Atención: se leyeron {self._opciones.max_paginas_inicial} páginas sin llegar al final"
+                + ("" if es_linea_base else " ni a una actuación ya registrada; puede faltar historial intermedio")
+                + "."
+            )
         return ResultadoVerificacion(
             vigilado.radicado,
             EstadoVerificacion.OK,
@@ -410,6 +441,8 @@ class ServicioVigilancia:
             return novedad
         try:
             documentos = self._fuente.listar_documentos(novedad.actuacion.id_registro)
+        except RespuestaInesperada:
+            raise
         except ErrorFuente as exc:
             log.warning(
                 "No se pudo listar los documentos de la actuación %s: %s", novedad.actuacion.id_registro, exc
@@ -429,6 +462,8 @@ class ServicioVigilancia:
         for proceso in procesos:
             try:
                 detalle = self._fuente.obtener_detalle(proceso.id_proceso)
+            except RespuestaInesperada:
+                raise
             except ErrorFuente as exc:
                 log.warning("No se pudo leer el detalle del proceso %s: %s", proceso.id_proceso, exc)
                 continue
@@ -491,7 +526,7 @@ class ServicioVigilancia:
             if incluir_detalle:
                 try:
                     detalles.append(self._fuente.obtener_detalle(proceso.id_proceso))
-                except FuenteNoDisponible:
+                except (FuenteNoDisponible, RespuestaInesperada):
                     raise
                 except ErrorFuente as exc:
                     log.warning("No se pudo leer el detalle del proceso %s: %s", proceso.id_proceso, exc)

@@ -31,7 +31,7 @@ from consultor_procesos.adaptadores.notificacion.formato import formatear_evento
 from consultor_procesos.adaptadores.persistencia.memoria import RepositorioMemoria
 from consultor_procesos.adaptadores.persistencia.sqlite import RepositorioSQLite
 from consultor_procesos.aplicacion.servicio_vigilancia import OpcionesVerificacion, ServicioVigilancia
-from consultor_procesos.dominio.errores import DocumentoNoEncontrado, ErrorFuente
+from consultor_procesos.dominio.errores import DocumentoNoEncontrado, ErrorFuente, RespuestaInesperada
 from consultor_procesos.dominio.modelos import EventoNovedades, Novedad, ProcesoVigilado
 from consultor_procesos.enlaces import URL_BASE_CPNU, url_descarga_documento
 from consultor_procesos.infraestructura.cortesia import LimitadorTasa, PoliticaReintentos
@@ -54,10 +54,17 @@ class TestAnalizadorDocumentos:
         [documento] = analizar_documentos(datos, 1)
         assert documento.id_documento == 9 and documento.nombre == "x.pdf" and documento.tamano == 1234 and documento.tipo == "pdf"
 
-    def test_elementos_sin_id_se_omiten_y_vacios_toleran(self):
-        assert analizar_documentos([{"nombre": "sin id"}], 1) == []
+    def test_vacios_se_toleran_y_elementos_con_id_nulo_se_omiten(self):
         assert analizar_documentos(None, 1) == []
         assert analizar_documentos({}, 1) == []
+        assert analizar_documentos([], 1) == []
+        assert analizar_documentos([{"idRegDocumento": None, "nombre": "sin id"}], 1) == []
+
+    def test_documento_sin_clave_de_identificador_falla_en_voz_alta(self):
+        with pytest.raises(RespuestaInesperada, match="idRegDocumento"):
+            analizar_documentos([{"nombre": "sin id"}], 1)
+        with pytest.raises(RespuestaInesperada):
+            analizar_documentos({"archivos": [dict_documento(1)]}, 1)
 
     def test_forma_invalida(self):
         with pytest.raises(ErrorFuente):

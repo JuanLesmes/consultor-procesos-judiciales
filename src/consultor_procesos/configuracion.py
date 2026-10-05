@@ -3,6 +3,14 @@
 Los valores por defecto están pensados para ser amables con el portal: 12 solicitudes por
 minuto como máximo, pausa entre radicados, reintentos con retroceso, cortacircuito y un
 presupuesto diario de 400 solicitudes. Súbalos solo si tiene una razón concreta.
+
+En el servidor casi todo funciona con los valores por defecto; lo que cambia de una
+instalación a otra va en variables de entorno (archivo `.env` del despliegue):
+
+* `CONSULTOR_CONFIG`: ruta del archivo TOML (opcional).
+* `CONSULTOR_CONTACTO`: correo con el que el programa se identifica ante la Rama Judicial.
+* `CONSULTOR_USUARIOS`: usuarios de la interfaz (ver `consultor-procesos crear-usuario`).
+* `CONSULTOR_SMTP_CONTRASENA`: contraseña del correo, si se activan los avisos por correo.
 """
 
 from __future__ import annotations
@@ -13,17 +21,21 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .enlaces import URL_BASE_CPNU
 
 NOMBRE_ARCHIVO_PREDETERMINADO = "consultor_procesos.toml"
+VARIABLE_CONFIG = "CONSULTOR_CONFIG"
+VARIABLE_CONTACTO = "CONSULTOR_CONTACTO"
 
 
 @dataclass
 class ConfigGeneral:
     base_datos: str = "consultor_procesos.sqlite"
+    # "{version}" se reemplaza por la versión del programa. CONSULTOR_CONTACTO, si está definida, manda.
     agente_usuario: str = (
-        "ConsultorDeProcesos/0.1 (vigilancia de radicados propios; "
-        "configure general.agente_usuario con un correo de contacto)"
+        "ConsultorDeProcesos/{version} (vigilancia de radicados propios; "
+        "configure CONSULTOR_CONTACTO con un correo de contacto)"
     )
     url_base: str = URL_BASE_CPNU
     nivel_registro: str = "INFO"
@@ -54,7 +66,6 @@ class ConfigVerificacion:
     dias_gracia: int = 5
     horas_refresco_completo: int = 24
     max_paginas_inicial: int = 20
-    max_paginas_incremental: int = 3
     palabras_clave: list[str] = field(default_factory=lambda: ["AUTO"])
     notificar_existentes: bool = False
     listar_documentos_de_autos: bool = True
@@ -99,8 +110,7 @@ class ConfigVigilancia:
 @dataclass
 class ConfigWeb:
     host: str = "127.0.0.1"
-    puerto: int = 8765
-    abrir_navegador: bool = True
+    puerto: int = 8770
     segundos_actualizacion: int = 30
 
 
@@ -160,7 +170,14 @@ def _poblar(tipo: type, datos: dict[str, Any]) -> Any:
 
 
 def cargar_configuracion(ruta: str | Path | None = None) -> Configuracion:
-    """Carga la configuración. Sin ruta, usa `consultor_procesos.toml` si existe; si no, los valores por defecto."""
+    """Carga la configuración.
+
+    Sin ruta usa CONSULTOR_CONFIG o, si no está definida, `consultor_procesos.toml` cuando
+    existe; si no hay archivo, los valores por defecto.
+    """
+    if ruta is None and os.environ.get(VARIABLE_CONFIG, "").strip():
+        candidata = Path(os.environ[VARIABLE_CONFIG].strip())
+        return _cargar_archivo(candidata) if candidata.exists() else Configuracion()
     if ruta is None:
         candidata = Path(NOMBRE_ARCHIVO_PREDETERMINADO)
         if not candidata.exists():
@@ -169,9 +186,25 @@ def cargar_configuracion(ruta: str | Path | None = None) -> Configuracion:
     ruta = Path(ruta)
     if not ruta.exists():
         raise FileNotFoundError(f"No existe el archivo de configuración {ruta}")
+    return _cargar_archivo(ruta)
+
+
+def _cargar_archivo(ruta: Path) -> Configuracion:
     with ruta.open("rb") as archivo:
         datos = tomllib.load(archivo)
     return _poblar(Configuracion, datos)
+
+
+def agente_usuario(config: Configuracion) -> str:
+    """El User-Agent con el que el programa se identifica ante la Rama Judicial."""
+    contacto = os.environ.get(VARIABLE_CONTACTO, "").strip()
+    if contacto:
+        return f"ConsultorDeProcesos/{__version__} (vigilancia de radicados propios; contacto: {contacto})"
+    return config.general.agente_usuario.replace("{version}", __version__)
+
+
+def tiene_contacto(agente: str) -> bool:
+    return "@" in agente
 
 
 def contrasena_correo(config: ConfigCorreo) -> str:
@@ -186,7 +219,8 @@ CONFIGURACION_EJEMPLO = """# Configuración de Consultor de Procesos.
 base_datos = "consultor_procesos.sqlite"
 # Identifíquese ante la Rama Judicial: un agente honesto con contacto es la mejor defensa
 # contra bloqueos, porque permite que el administrador le escriba antes de vetarlo.
-agente_usuario = "ConsultorDeProcesos/0.1 (vigilancia de radicados propios; contacto: su-correo@ejemplo.com)"
+# En el servidor es más cómodo definir CONSULTOR_CONTACTO en el .env, que tiene prioridad.
+agente_usuario = "ConsultorDeProcesos/{version} (vigilancia de radicados propios; contacto: su-correo@ejemplo.com)"
 nivel_registro = "INFO"
 # archivo_registro = "consultor_procesos.log"
 directorio_documentos = "documentos"   # caché local de los PDF descargados
@@ -209,8 +243,7 @@ hora_fin = 24
 [verificacion]
 dias_gracia = 5                # si la última actuación es reciente, se releen actuaciones aunque la fecha no cambie
 horas_refresco_completo = 24   # cada cuántas horas se releen actuaciones aunque nada haya cambiado
-max_paginas_inicial = 20       # páginas (de 40) que se leen al registrar un radicado
-max_paginas_incremental = 3    # páginas que se leen en verificaciones posteriores
+max_paginas_inicial = 20       # tope de páginas (de 40) por lectura; las siguientes leen hasta empalmar con lo conocido
 palabras_clave = ["AUTO"]      # añada p. ej. "SENTENCIA", "FIJACION ESTADO" si quiere alertas de más tipos
 notificar_existentes = false   # true para recibir también las actuaciones ya existentes al agregar un radicado
 listar_documentos_de_autos = true   # al detectar un auto con documentos, pedir la lista (1 solicitud) para enlazar el PDF
@@ -234,14 +267,13 @@ dias = ["lun", "mar", "mie", "jue", "vie"]
 hasta = "18:00"                # después de esta hora no se ejecuta ninguna verificación atrasada
 fluctuacion_minutos = 5        # cada verificación arranca hasta 5 min después de la hora, al azar
 festivos = []                  # fechas "AAAA-MM-DD" en las que no se verifica
-iniciar_con_interfaz = true    # al abrir la interfaz ('web'), la vigilancia arranca sola con este horario
+iniciar_con_interfaz = true    # al arrancar el servidor ('web'), la vigilancia arranca sola con este horario
 intervalo_minutos = 240        # solo si horas = []: verificar cada tantos minutos
 jitter_fraccion = 0.2          # +/- 20 % aleatorio sobre el intervalo
 
 [web]
-host = "127.0.0.1"          # solo accesible desde este equipo
-puerto = 8765
-abrir_navegador = true
+host = "127.0.0.1"          # en el contenedor se usa --host 0.0.0.0 detrás de Caddy (HTTPS)
+puerto = 8770
 segundos_actualizacion = 30
 
 [notificaciones]

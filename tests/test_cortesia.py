@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -181,3 +181,53 @@ class TestVentanaHoraria:
             VentanaHoraria(24, 24)
         with pytest.raises(ValueError):
             VentanaHoraria(0, 0)
+
+
+class TestCortacircuitoSinBloqueos:
+    def test_sonda_sin_resolver_vence_y_permite_otra(self):
+        reloj = RelojFalso()
+        circuito = Cortacircuito(umbral_fallos=1, segundos_abierto=60, reloj=reloj)
+        circuito.registrar_fallo()
+        reloj.avanzar(60)
+        assert circuito.permitir() is True
+        assert circuito.permitir() is False, "una sola sonda a la vez"
+        reloj.avanzar(59)
+        assert circuito.permitir() is False
+        reloj.avanzar(1)
+        assert circuito.permitir() is True, "la sonda que nunca se resolvió vence"
+
+    def test_liberar_sonda(self):
+        reloj = RelojFalso()
+        circuito = Cortacircuito(umbral_fallos=1, segundos_abierto=60, reloj=reloj)
+        circuito.registrar_fallo()
+        reloj.avanzar(60)
+        assert circuito.permitir() and not circuito.permitir()
+        circuito.liberar_sonda()
+        assert circuito.permitir()
+        assert circuito.estado == Cortacircuito.SEMIABIERTO
+
+
+class TestPresupuestoAtomico:
+    def test_hilos_concurrentes_no_se_pasan_del_tope(self):
+        import threading
+
+        contador = ContadorMemoria()
+        presupuesto = PresupuestoDiario(50, contador, hoy=lambda: date(2026, 9, 2))
+        consumidas: list[int] = []
+        agotadas: list[int] = []
+
+        def trabajar() -> None:
+            for _ in range(20):
+                try:
+                    consumidas.append(presupuesto.consumir())
+                except PresupuestoAgotado:
+                    agotadas.append(1)
+
+        hilos = [threading.Thread(target=trabajar) for _ in range(8)]
+        for hilo in hilos:
+            hilo.start()
+        for hilo in hilos:
+            hilo.join()
+        assert len(consumidas) == 50 and len(agotadas) == 110
+        assert sorted(consumidas) == list(range(1, 51))
+        assert contador.obtener_contador(date(2026, 9, 2)) == 50

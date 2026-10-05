@@ -214,3 +214,81 @@ def test_cliente_http_inyectado_recibe_cabeceras_y_no_se_cierra(reloj):
     cliente.cerrar()
     assert not externo.is_closed
     externo.close()
+
+
+# --- el cortacircuito nunca queda bloqueado -------------------------------------------------
+
+
+def _abrir_circuito(reloj, cliente, ruta, circuito) -> None:
+    with pytest.raises(FuenteNoDisponible):
+        cliente.buscar_por_radicado(RADICADO)
+    assert circuito.estado == Cortacircuito.ABIERTO
+    reloj.avanzar(60)
+    assert circuito.estado == Cortacircuito.SEMIABIERTO
+
+
+@respx.mock
+def test_sonda_que_recibe_un_404_cierra_el_circuito(reloj):
+    """Antes, un 4xx en la sonda dejaba el circuito SEMIABIERTO con la sonda tomada para siempre."""
+    ruta = respx.get(URL_BUSQUEDA).mock(return_value=httpx.Response(503))
+    circuito = Cortacircuito(umbral_fallos=1, segundos_abierto=60, reloj=reloj)
+    reintentos = PoliticaReintentos(intentos_max=1)
+    with hacer_cliente(reloj, cortacircuito=circuito, reintentos=reintentos) as cliente:
+        _abrir_circuito(reloj, cliente, ruta, circuito)
+        ruta.mock(return_value=httpx.Response(404, json={"Message": "no existe"}))
+        with pytest.raises(ErrorFuente):
+            cliente.buscar_por_radicado(RADICADO)
+        assert circuito.estado == Cortacircuito.CERRADO, "la fuente respondió: el circuito se cierra"
+        ruta.mock(return_value=httpx.Response(200, json=dict_busqueda([dict_proceso()])))
+        assert len(cliente.buscar_por_radicado(RADICADO)) == 1
+
+
+@respx.mock
+def test_403_cuenta_como_fallo_y_reabre_el_circuito(reloj):
+    ruta = respx.get(URL_BUSQUEDA).mock(return_value=httpx.Response(503))
+    circuito = Cortacircuito(umbral_fallos=1, segundos_abierto=60, reloj=reloj)
+    with hacer_cliente(reloj, cortacircuito=circuito, reintentos=PoliticaReintentos(intentos_max=1)) as cliente:
+        _abrir_circuito(reloj, cliente, ruta, circuito)
+        ruta.mock(return_value=httpx.Response(403))
+        with pytest.raises(ErrorFuente) as info:
+            cliente.buscar_por_radicado(RADICADO)
+        assert info.value.codigo == 403
+        assert circuito.estado == Cortacircuito.ABIERTO, "un 403 puede ser un bloqueo: se vuelve a esperar"
+        reloj.avanzar(60)
+        ruta.mock(return_value=httpx.Response(200, json=dict_busqueda([dict_proceso()])))
+        assert len(cliente.buscar_por_radicado(RADICADO)) == 1
+        assert circuito.estado == Cortacircuito.CERRADO
+
+
+@respx.mock
+def test_presupuesto_agotado_durante_la_sonda_la_libera(reloj):
+    ruta = respx.get(URL_BUSQUEDA).mock(return_value=httpx.Response(503))
+    circuito = Cortacircuito(umbral_fallos=1, segundos_abierto=60, reloj=reloj)
+    presupuesto = PresupuestoDiario(1, ContadorMemoria())
+    with hacer_cliente(
+        reloj, cortacircuito=circuito, reintentos=PoliticaReintentos(intentos_max=1), presupuesto=presupuesto
+    ) as cliente:
+        _abrir_circuito(reloj, cliente, ruta, circuito)
+        with pytest.raises(PresupuestoAgotado):
+            cliente.buscar_por_radicado(RADICADO)
+        assert ruta.call_count == 1
+        assert circuito.permitir(), "la sonda quedó libre para cuando haya presupuesto"
+
+
+@respx.mock
+def test_mensaje_del_circuito_con_sonda_en_curso(reloj):
+    respx.get(URL_BUSQUEDA).mock(return_value=httpx.Response(503))
+    circuito = Cortacircuito(umbral_fallos=1, segundos_abierto=60, reloj=reloj)
+    with hacer_cliente(reloj, cortacircuito=circuito, reintentos=PoliticaReintentos(intentos_max=1)) as cliente:
+        _abrir_circuito(reloj, cliente, None, circuito)
+        assert circuito.permitir()
+        with pytest.raises(CircuitoAbierto, match="consulta de prueba en curso"):
+            cliente.buscar_por_radicado(RADICADO)
+
+
+@respx.mock
+def test_agente_usuario_con_tildes_no_rompe_las_solicitudes(reloj):
+    ruta = respx.get(URL_BUSQUEDA).mock(return_value=httpx.Response(200, json=dict_busqueda([dict_proceso()])))
+    with ClienteCPNU(agente_usuario="Consultor/1.0 (vigilancia; contacto: oficina@ejemplo.com, Bogotá)", dormir=reloj.dormir) as cliente:
+        assert len(cliente.buscar_por_radicado(RADICADO)) == 1
+    assert ruta.calls[0].request.headers["User-Agent"] == "Consultor/1.0 (vigilancia; contacto: oficina@ejemplo.com, Bogota)"

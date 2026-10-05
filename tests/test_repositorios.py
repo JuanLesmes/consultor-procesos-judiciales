@@ -9,6 +9,7 @@ import pytest
 from apoyo import RADICADO, RADICADO_2, hacer_actuacion
 from consultor_procesos.adaptadores.persistencia.memoria import RepositorioMemoria
 from consultor_procesos.adaptadores.persistencia.sqlite import RepositorioSQLite
+from consultor_procesos.dominio.errores import PresupuestoAgotado
 from consultor_procesos.dominio.modelos import EstadoVerificacion, Novedad, ProcesoVigilado, ResultadoVerificacion
 
 MOMENTO = datetime(2026, 9, 2, 10, 30)
@@ -147,3 +148,46 @@ def test_sqlite_conserva_los_datos_al_reabrir(tmp_path):
         assert repo.obtener_vigilado(RADICADO).alias == "persistente"
         assert repo.ids_actuaciones_conocidas(RADICADO) == {1}
         assert repo.obtener_contador(date(2026, 9, 2)) == 5
+
+
+def test_contar_pendientes_por_radicado(repositorio):
+    novedades = [novedad(1, 1, True), novedad(2, 2, False), novedad(3, 1, True, radicado=RADICADO_2)]
+    repositorio.guardar_novedades(novedades, datetime(2026, 9, 2, 10, 0))
+    assert repositorio.contar_pendientes_por_radicado() == {
+        RADICADO: {"total": 2, "autos": 1},
+        RADICADO_2: {"total": 1, "autos": 1},
+    }
+    repositorio.marcar_revisada(3)
+    assert repositorio.contar_pendientes_por_radicado() == {RADICADO: {"total": 2, "autos": 1}}
+
+
+def test_incrementar_si_menor_respeta_el_tope(repositorio):
+    hoy = date(2026, 9, 2)
+    assert [repositorio.incrementar_si_menor(hoy, 3) for _ in range(5)] == [1, 2, 3, None, None]
+    assert repositorio.obtener_contador(hoy) == 3
+    assert repositorio.incrementar_si_menor(date(2026, 9, 3), 3) == 1, "cada día empieza de cero"
+
+
+def test_presupuesto_compartido_entre_dos_conexiones_sqlite(tmp_path):
+    """Dos procesos sobre la misma base (por ejemplo, la interfaz y un 'verificar' manual) comparten el tope."""
+    from consultor_procesos.adaptadores.persistencia.sqlite import RepositorioSQLite
+    from consultor_procesos.infraestructura.cortesia import PresupuestoDiario
+
+    ruta = tmp_path / "compartida.sqlite"
+    hoy = date(2026, 9, 2)
+    with RepositorioSQLite(ruta) as uno, RepositorioSQLite(ruta) as otro:
+        a = PresupuestoDiario(3, uno, hoy=lambda: hoy)
+        b = PresupuestoDiario(3, otro, hoy=lambda: hoy)
+        assert [a.consumir(), b.consumir(), a.consumir()] == [1, 2, 3]
+        with pytest.raises(PresupuestoAgotado):
+            b.consumir()
+
+
+def test_respaldo_sqlite_es_una_copia_consistente(tmp_path):
+    from consultor_procesos.adaptadores.persistencia.sqlite import RepositorioSQLite
+
+    with RepositorioSQLite(tmp_path / "base.sqlite") as repo:
+        repo.guardar_vigilado(ProcesoVigilado(radicado=RADICADO, alias="Demo"))
+        destino = repo.respaldar(tmp_path / "respaldos" / "copia.sqlite")
+    with RepositorioSQLite(destino) as copia:
+        assert copia.obtener_vigilado(RADICADO).alias == "Demo"

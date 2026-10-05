@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import logging
+import os
+import re
+import signal
 import sys
 import tomllib
-import webbrowser
 from collections.abc import Callable, Iterable
 from datetime import date, datetime
 from pathlib import Path
@@ -23,12 +26,21 @@ from .adaptadores.notificacion.formato import linea_novedad, linea_publicacion, 
 from .adaptadores.notificacion.webhook import NotificadorWebhook
 from .adaptadores.persistencia.sqlite import RepositorioSQLite
 from .adaptadores.publicaciones.cliente import ClientePublicaciones
+from .adaptadores.web.seguridad import LONGITUD_MINIMA_CLAVE, VARIABLE_USUARIOS, Autenticador, generar_hash
 from .adaptadores.web.servidor import AplicacionWeb, ServidorWeb
 from .aplicacion.horario import Horario
 from .aplicacion.planificador import Planificador
 from .aplicacion.servicio_publicaciones import OpcionesPublicaciones, ServicioPublicaciones
 from .aplicacion.servicio_vigilancia import OpcionesVerificacion, ServicioVigilancia
-from .configuracion import Configuracion, cargar_configuracion, contrasena_correo, escribir_ejemplo
+from .configuracion import (
+    VARIABLE_CONTACTO,
+    Configuracion,
+    agente_usuario,
+    cargar_configuracion,
+    contrasena_correo,
+    escribir_ejemplo,
+    tiene_contacto,
+)
 from .dominio.errores import (
     ErrorConsultor,
     FuenteNoDisponible,
@@ -58,6 +70,7 @@ CODIGO_OK = 0
 CODIGO_USO = 1
 CODIGO_FUENTE = 2
 CODIGO_NO_ENCONTRADO = 3
+HOSTS_LOCALES = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 # --- construcción de componentes -------------------------------------------------------------
@@ -66,7 +79,7 @@ CODIGO_NO_ENCONTRADO = 3
 def construir_fuente(config: Configuracion, repositorio: Repositorio) -> ClienteCPNU:
     c = config.cortesia
     return ClienteCPNU(
-        agente_usuario=config.general.agente_usuario,
+        agente_usuario=agente_usuario(config),
         url_base=config.general.url_base,
         tiempo_espera=c.tiempo_espera_segundos,
         limitador=LimitadorTasa(c.solicitudes_por_minuto, rafaga=c.rafaga),
@@ -91,7 +104,7 @@ def construir_fuente_publicaciones(config: Configuracion, repositorio: Repositor
         return None
     c = config.cortesia
     return ClientePublicaciones(
-        agente_usuario=config.general.agente_usuario,
+        agente_usuario=agente_usuario(config),
         instancia_portlet=p.instancia_portlet,
         tiempo_espera=p.tiempo_espera_segundos,
         limitador=LimitadorTasa(p.solicitudes_por_minuto, rafaga=1),
@@ -161,7 +174,6 @@ def construir_servicio(
         dias_gracia=v.dias_gracia,
         horas_refresco_completo=v.horas_refresco_completo,
         max_paginas_inicial=v.max_paginas_inicial,
-        max_paginas_incremental=v.max_paginas_incremental,
         pausa_entre_procesos_segundos=config.cortesia.pausa_entre_procesos_segundos,
         notificar_existentes=v.notificar_existentes,
         listar_documentos_de_autos=v.listar_documentos_de_autos,
@@ -371,12 +383,25 @@ def construir_analizador() -> argparse.ArgumentParser:
     s.add_argument("--revisar", action="store_true", help="Consultar el portal ahora, sin esperar el intervalo.")
     s.add_argument("--limite", type=int, default=30)
 
-    s = sub.add_parser("web", help="Abre la interfaz web local (novedades, autos, documentos, vigilancia).")
-    s.add_argument("--host", help="Dirección de escucha (por defecto web.host, 127.0.0.1).")
-    s.add_argument("--puerto", type=int, help="Puerto (por defecto web.puerto, 8765; 0 elige uno libre).")
+    s = sub.add_parser("web", help="Servidor web: interfaz (novedades, autos, documentos) y vigilancia automática.")
+    s.add_argument("--host", help="Dirección de escucha (por defecto web.host, 127.0.0.1; en el contenedor 0.0.0.0).")
+    s.add_argument("--puerto", type=int, help="Puerto (por defecto web.puerto, 8770; 0 elige uno libre).")
     s.add_argument("--vigilar", action="store_true", help="Arrancar la vigilancia al iniciar aunque vigilancia.iniciar_con_interfaz sea false.")
-    s.add_argument("--sin-vigilar", action="store_true", help="No arrancar la vigilancia automática al abrir la interfaz.")
-    s.add_argument("--sin-navegador", action="store_true", help="No abrir el navegador automáticamente.")
+    s.add_argument("--sin-vigilar", action="store_true", help="No arrancar la vigilancia automática.")
+    s.add_argument("--proxy", action="store_true", help="Detrás de un proxy (Caddy): tomar la IP del cliente de X-Forwarded-For.")
+    s.add_argument(
+        "--sin-autenticacion",
+        action="store_true",
+        help=f"Permitir escuchar fuera de 127.0.0.1 sin usuarios ({VARIABLE_USUARIOS}); solo para una red interna.",
+    )
+
+    s = sub.add_parser("crear-usuario", help=f"Genera la línea de un usuario para {VARIABLE_USUARIOS} (no guarda nada).")
+    s.add_argument("nombre", help="Nombre de usuario (letras, números, punto, guion, arroba).")
+    s.add_argument("--clave-stdin", action="store_true", help="Leer la contraseña de la entrada estándar en vez de pedirla.")
+
+    s = sub.add_parser("respaldar", help="Copia consistente de la base de datos, aunque el servidor esté en marcha.")
+    s.add_argument("--destino", default="respaldos", help="Carpeta de los respaldos (por defecto ./respaldos).")
+    s.add_argument("--conservar", type=int, default=14, help="Cuántos respaldos conservar (por defecto 14).")
     return analizador
 
 
@@ -519,8 +544,25 @@ def _cmd_historial(args: argparse.Namespace, repositorio: Repositorio, salida: T
     return CODIGO_OK
 
 
+def avisos_de_configuracion(config: Configuracion) -> list[str]:
+    """Lo que conviene corregir en la configuración; se muestra al arrancar y en el monitor."""
+    avisos: list[str] = []
+    if not tiene_contacto(agente_usuario(config)):
+        avisos.append(
+            f"Falta el correo de contacto ({VARIABLE_CONTACTO}): sin él, la Rama Judicial no podría avisar antes de bloquear el acceso."
+        )
+    correo = config.notificaciones.correo
+    if correo.habilitado and not contrasena_correo(correo):
+        avisos.append(f"El aviso por correo está activado pero falta la contraseña ({correo.contrasena_env}).")
+    return avisos
+
+
 def construir_aplicacion_web(
-    config: Configuracion, servicio: ServicioVigilancia, repositorio: Repositorio, fuente: FuenteProcesos
+    config: Configuracion,
+    servicio: ServicioVigilancia,
+    repositorio: Repositorio,
+    fuente: FuenteProcesos,
+    autenticador: Autenticador | None = None,
 ) -> AplicacionWeb:
     def fabrica_planificador(ciclo: Callable[[], None]) -> Planificador:
         return construir_planificador(config, ciclo, repositorio)
@@ -532,7 +574,15 @@ def construir_aplicacion_web(
         presupuesto=getattr(fuente, "presupuesto", None),
         segundos_actualizacion=config.web.segundos_actualizacion,
         horario=construir_horario(config),
+        autenticador=autenticador,
+        commit=os.environ.get("CONSULTOR_COMMIT", "").strip() or None,
+        avisos_configuracion=avisos_de_configuracion(config),
     )
+
+
+def _al_recibir_sigterm(signum: int, marco: object) -> None:
+    # `docker stop` envía SIGTERM: se convierte en la misma salida ordenada que Ctrl+C.
+    raise KeyboardInterrupt
 
 
 def _cmd_web(
@@ -543,33 +593,91 @@ def _cmd_web(
     fuente: FuenteProcesos,
     salida: TextIO,
 ) -> int:
-    aplicacion = construir_aplicacion_web(config, servicio, repositorio, fuente)
     host = args.host or config.web.host
     puerto = args.puerto if args.puerto is not None else config.web.puerto
-    servidor = ServidorWeb(aplicacion, host=host, puerto=puerto)
+    try:
+        autenticador = Autenticador.desde_entorno()
+    except ValueError as exc:
+        print(f"Error de configuración: {exc}", file=sys.stderr)
+        return CODIGO_USO
+    if not autenticador.activo and host not in HOSTS_LOCALES and not args.sin_autenticacion:
+        print(
+            f"Para escuchar en {host} hay que definir usuarios en {VARIABLE_USUARIOS} "
+            "(genérelos con 'consultor-procesos crear-usuario NOMBRE'). "
+            "Use --sin-autenticacion solo dentro de una red interna.",
+            file=sys.stderr,
+        )
+        return CODIGO_USO
+    aplicacion = construir_aplicacion_web(config, servicio, repositorio, fuente, autenticador)
+    servidor = ServidorWeb(aplicacion, host=host, puerto=puerto, confiar_proxy=args.proxy)
     try:
         servidor.iniciar()
     except OSError as exc:
         print(
             f"No se pudo abrir el puerto {puerto} en {host}: {exc}. "
-            "Probablemente ya hay una interfaz abierta; ciérrela o use --puerto 0 para elegir uno libre.",
+            "Probablemente ya hay otro servidor en ese puerto; deténgalo o use --puerto 0 para elegir uno libre.",
             file=sys.stderr,
         )
         return CODIGO_USO
-    print(f"Interfaz disponible en {servidor.url}  (Ctrl+C para detener)", file=salida)
+    acceso = f"usuarios: {', '.join(autenticador.usuarios)}" if autenticador.activo else "sin autenticación"
+    print(f"Servidor disponible en {servidor.url} ({acceso}). Ctrl+C para detener.", file=salida)
+    for aviso in avisos_de_configuracion(config):
+        log.warning(aviso)
     arrancar = args.vigilar or (config.vigilancia.iniciar_con_interfaz and not args.sin_vigilar)
     if arrancar and aplicacion.vigilante is not None:
         aplicacion.vigilante.iniciar()
         descripcion = construir_planificador(config, lambda: None, repositorio).descripcion()
         print(f"Vigilancia automática {descripcion}. Puede pausarla desde la interfaz.", file=salida)
-    if not args.sin_navegador and config.web.abrir_navegador:
-        webbrowser.open(servidor.url)
+    try:
+        anterior = signal.signal(signal.SIGTERM, _al_recibir_sigterm)
+    except ValueError:  # fuera del hilo principal (pruebas): no se puede instalar el manejador
+        anterior = None
     try:
         servidor.servir_para_siempre()
     except KeyboardInterrupt:
-        print("\nInterfaz detenida por el usuario.", file=salida)
+        print("\nServidor detenido.", file=salida)
     finally:
         servidor.detener()
+        if anterior is not None:
+            signal.signal(signal.SIGTERM, anterior)
+    return CODIGO_OK
+
+
+def _cmd_crear_usuario(args: argparse.Namespace, salida: TextIO) -> int:
+    nombre = args.nombre.strip()
+    if not re.fullmatch(r"[A-Za-z0-9._@-]{1,64}", nombre):
+        print("El nombre de usuario solo admite letras, números, punto, guion y arroba (máximo 64).", file=sys.stderr)
+        return CODIGO_USO
+    if args.clave_stdin:
+        clave = sys.stdin.readline().rstrip("\r\n")
+    else:
+        clave = getpass.getpass("Contraseña: ")
+        if getpass.getpass("Repita la contraseña: ") != clave:
+            print("Las contraseñas no coinciden.", file=sys.stderr)
+            return CODIGO_USO
+    if len(clave) < LONGITUD_MINIMA_CLAVE:
+        print(f"La contraseña debe tener al menos {LONGITUD_MINIMA_CLAVE} caracteres.", file=sys.stderr)
+        return CODIGO_USO
+    print(f"{nombre}:{generar_hash(clave)}", file=salida)
+    print(
+        f"Copie la línea anterior en {VARIABLE_USUARIOS} del archivo .env (varios usuarios separados por comas) "
+        "y reinicie el servidor.",
+        file=sys.stderr,
+    )
+    return CODIGO_OK
+
+
+def _cmd_respaldar(args: argparse.Namespace, repositorio: Repositorio, salida: TextIO) -> int:
+    respaldar = getattr(repositorio, "respaldar", None)
+    if not callable(respaldar):
+        print("El repositorio actual no admite respaldos.", file=sys.stderr)
+        return CODIGO_USO
+    carpeta = Path(args.destino)
+    ruta = respaldar(carpeta / f"consultor-{datetime.now():%Y%m%d-%H%M%S}.sqlite")
+    copias = sorted(carpeta.glob("consultor-*.sqlite"))
+    for vieja in copias[: max(0, len(copias) - max(1, args.conservar))]:
+        vieja.unlink()
+    print(f"Respaldo escrito en {ruta} ({ruta.stat().st_size} bytes); se conservan los últimos {max(1, args.conservar)}.", file=salida)
     return CODIGO_OK
 
 
@@ -601,6 +709,8 @@ def _despachar(
         return _cmd_publicaciones(args, servicio, salida)
     if args.comando == "web":
         return _cmd_web(args, config, servicio, repositorio, fuente, salida)
+    if args.comando == "respaldar":
+        return _cmd_respaldar(args, repositorio, salida)
     raise ValueError(f"Comando desconocido: {args.comando}")
 
 
@@ -633,6 +743,8 @@ def main(
             return CODIGO_USO
         print(f"Configuración de ejemplo escrita en {ruta}. Edite general.agente_usuario con su correo.", file=salida)
         return CODIGO_OK
+    if args.comando == "crear-usuario":
+        return _cmd_crear_usuario(args, salida)
 
     try:
         config = cargar_configuracion(args.config)

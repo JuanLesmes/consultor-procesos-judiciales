@@ -45,7 +45,6 @@ def entorno(fuente: FuenteFalsa, notificador: NotificadorRegistro):
         dias_gracia=5,
         horas_refresco_completo=24,
         max_paginas_inicial=5,
-        max_paginas_incremental=2,
         pausa_entre_procesos_segundos=2.0,
         descubrir_despachos=False,
     )
@@ -393,3 +392,75 @@ class TestFichaDelProceso:
         reloj.avanzar(hours=1)
         servicio.verificar_todos()
         assert fuente.llamadas.count(("detalle", ID_PROCESO)) == 1, "la ficha no se vuelve a pedir si nada cambió"
+
+
+class TestSinHuecosNiSilencios:
+    def test_muchas_actuaciones_entre_dos_verificaciones_se_leen_todas(self, entorno):
+        """Antes la lectura incremental paraba en 3 páginas: con 200 nuevas se perdían 80 para siempre."""
+        entorno.fuente.por_pagina = 40
+        registrar_base(entorno.fuente)
+        entorno.servicio.opciones.max_paginas_inicial = 20
+        entorno.servicio.agregar(RADICADO)
+        entorno.servicio.verificar_todos()
+        entorno.reloj.avanzar(days=1)
+        for i in range(200):
+            entorno.fuente.agregar_actuacion(
+                ID_PROCESO, hacer_actuacion(5000 + i, 4 + i, fecha=date(2026, 9, 1)), nueva_fecha_ultima=date(2026, 9, 1)
+            )
+
+        [resultado] = entorno.servicio.verificar_todos()
+
+        assert resultado.estado == EstadoVerificacion.OK and len(resultado.novedades) == 200
+        assert len(entorno.repo.ids_actuaciones_conocidas(RADICADO)) == 203
+        assert "Atención" not in resultado.mensaje
+        paginas = [l[2] for l in entorno.fuente.llamadas if l[0] == "actuaciones"]
+        assert paginas[-6:] == [1, 2, 3, 4, 5, 6], "leyó hasta empalmar con lo conocido (página 6), no más"
+
+    def test_si_ni_el_tope_alcanza_el_resultado_lo_advierte(self, entorno):
+        entorno.fuente.por_pagina = 1
+        registrar_base(entorno.fuente)
+        entorno.servicio.opciones.max_paginas_inicial = 5
+        entorno.servicio.agregar(RADICADO)
+        entorno.servicio.verificar_todos()
+        entorno.reloj.avanzar(days=1)
+        for i in range(8):
+            entorno.fuente.agregar_actuacion(ID_PROCESO, hacer_actuacion(6000 + i, 4 + i, fecha=date(2026, 9, 1)), date(2026, 9, 1))
+
+        [resultado] = entorno.servicio.verificar_todos()
+
+        assert len(resultado.novedades) == 5
+        assert "puede faltar historial intermedio" in resultado.mensaje
+
+    def test_cambio_de_estructura_en_la_ficha_deja_la_verificacion_en_error(self, fuente, notificador):
+        from consultor_procesos.dominio.errores import RespuestaInesperada
+
+        class FuenteConFichaCambiada(FuenteFalsa):
+            def obtener_detalle(self, id_proceso):
+                raise RespuestaInesperada("La respuesta de la fuente en el detalle del proceso no trae 'despacho'")
+
+        fuente_cambiada = FuenteConFichaCambiada()
+        registrar_base(fuente_cambiada)
+        repo = RepositorioMemoria()
+        servicio = ServicioVigilancia(fuente_cambiada, repo, notificador, opciones=OpcionesVerificacion(pausa_entre_procesos_segundos=0))
+        servicio.agregar(RADICADO)
+
+        [resultado] = servicio.verificar_todos()
+
+        assert resultado.estado == EstadoVerificacion.ERROR and "'despacho'" in resultado.mensaje
+        assert repo.listar_verificaciones(RADICADO)[0]["estado"] == "ERROR"
+
+    def test_cambio_de_estructura_al_listar_documentos_deja_la_verificacion_en_error(self, entorno):
+        from consultor_procesos.dominio.errores import RespuestaInesperada
+
+        registrar_base(entorno.fuente)
+        entorno.servicio.agregar(RADICADO)
+        entorno.servicio.verificar_todos()
+        entorno.reloj.avanzar(days=1)
+        nueva = hacer_actuacion(1004, 4, anotacion="AUTO DECRETA PRUEBAS", fecha=date(2026, 9, 1), con_documentos=True)
+        entorno.fuente.agregar_actuacion(ID_PROCESO, nueva, nueva_fecha_ultima=date(2026, 9, 1))
+        entorno.fuente.error_documentos = RespuestaInesperada("Un documento de la actuación no trae identificador")
+
+        [resultado] = entorno.servicio.verificar_todos()
+
+        assert resultado.estado == EstadoVerificacion.ERROR
+        assert 1004 not in entorno.repo.ids_actuaciones_conocidas(RADICADO), "se reintentará en la próxima verificación"
