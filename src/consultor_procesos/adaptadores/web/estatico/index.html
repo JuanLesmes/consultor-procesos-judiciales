@@ -248,6 +248,12 @@
     setTimeout(() => el.remove(), 6000);
   }
 
+  const FORMAS_RADICADO = {
+    anio_consecutivo: " (coincidencia por año y consecutivo)",
+    consecutivo_anio: " (coincidencia por consecutivo y año)",
+    radicado_sin_instancia: " (mismo número, sin instancia o en otra instancia)",
+  };
+
   async function api(ruta, opciones = {}) {
     // X-Requested-With: el servidor rechaza sin ella toda petición que modifica (protección CSRF).
     const cabeceras = { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest", ...(opciones.headers || {}) };
@@ -558,7 +564,7 @@
           ${conProceso ? `<div class="meta">${enlaceProceso(c)}</div>` : ""}
         </div>
         <div class="titulo">${esc(p.titulo)}</div>
-        <div class="meta">${esc(p.despacho || p.despacho_codigo)} · el radicado aparece en: <strong>${esc(c.donde)}</strong>${c.forma === "anio_consecutivo" ? " (coincidencia por año y consecutivo)" : ""}</div>
+        <div class="meta">${esc(p.despacho || p.despacho_codigo)} · el radicado aparece en: <strong>${esc(c.donde)}</strong>${FORMAS_RADICADO[c.forma] || ""}</div>
         ${c.fragmento ? `<div class="fragmento">…${esc(c.fragmento)}…</div>` : ""}
         ${docs.length ? `<ul class="docs">${docs.map((d) => `<li><span>&#128196; ${esc(d.etiqueta || "Documento")}</span><span class="acciones"><a class="btn pequeno primario" href="${esc(d.url)}" target="_blank" rel="noopener">Abrir PDF</a></span></li>`).join("")}</ul>` : ""}
         <div class="pie">

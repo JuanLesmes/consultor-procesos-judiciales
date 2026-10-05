@@ -126,7 +126,7 @@ class TestPatronesRadicado:
 
     def test_formas(self):
         formas = [f for f, _ in patrones_radicado(RADICADO)]
-        assert formas == ["radicado_completo", "radicado_sin_instancia", "anio_consecutivo"]
+        assert formas == ["radicado_completo", "radicado_sin_instancia", "anio_consecutivo", "consecutivo_anio"]
 
     @pytest.mark.parametrize(
         "texto, forma",
@@ -136,6 +136,10 @@ class TestPatronesRadicado:
             ("Expediente 110014003001202400123 (sin instancia)", "radicado_sin_instancia"),
             ("Proceso 2024-00123 demandante X", "anio_consecutivo"),
             ("Proceso 2024 - 123 demandante X", "anio_consecutivo"),
+            ("Estado: 2024-00123-00 auto requiere", "anio_consecutivo"),
+            ("Rad 2024 - 00123 - 01", "anio_consecutivo"),
+            ("Radicado 11001400300120240012301 (segunda instancia)", "radicado_sin_instancia"),
+            ("Proceso 00123-2024 auto", "consecutivo_anio"),
         ],
     )
     def test_encuentra(self, texto, forma):
@@ -143,7 +147,21 @@ class TestPatronesRadicado:
         assert resultado is not None and resultado[0] == forma
         assert resultado[1]
 
-    @pytest.mark.parametrize("texto", ["Proceso 2024-001234", "Radicado 11001400300120240012346", "2023-00123", "", None])
+    @pytest.mark.parametrize(
+        "texto",
+        [
+            "Proceso 2024-001234",
+            "Radicado 11001400300120240012445",
+            "Radicado 1100140030012024001230",
+            "2023-00123",
+            "2024-00124-00",
+            "Audiencia del 12/3/2024",
+            "Ley 123 de 2024",
+            "123-2024",
+            "",
+            None,
+        ],
+    )
     def test_no_encuentra(self, texto):
         assert buscar_radicado(texto, RADICADO) is None
 

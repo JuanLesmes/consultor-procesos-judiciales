@@ -150,11 +150,16 @@ def patrones_radicado(radicado: str) -> list[tuple[str, re.Pattern[str]]]:
     consecutivo, p. ej. "2020-00123") solo es fiable dentro de publicaciones del mismo despacho.
     """
     radicado = validar_radicado(radicado)
-    anio, consecutivo = radicado[12:16], str(int(radicado[16:21]))
+    anio, consecutivo, consecutivo_5 = radicado[12:16], str(int(radicado[16:21])), radicado[16:21]
     return [
         ("radicado_completo", re.compile(rf"(?<!\d){radicado}(?!\d)")),
-        ("radicado_sin_instancia", re.compile(rf"(?<!\d){radicado[:21]}(?!\d)")),
-        ("anio_consecutivo", re.compile(rf"(?<!\d){anio}0{{0,4}}{consecutivo}(?!\d)")),
+        # Los 21 primeros dígitos, sin instancia o con otra (el mismo proceso en segunda instancia: ...01).
+        ("radicado_sin_instancia", re.compile(rf"(?<!\d){radicado[:21]}(?:\d{{2}})?(?!\d)")),
+        # "2025-00451", "2025-451" y "2025-00451-00": con la instancia al final es la forma más común en los estados.
+        ("anio_consecutivo", re.compile(rf"(?<!\d){anio}0{{0,4}}{consecutivo}(?:\d{{2}})?(?!\d)")),
+        # Orden inverso, "00451-2025". Se exige el consecutivo con sus 5 dígitos para no confundirlo con
+        # una fecha ("12/3/2024" quedaría "1232024" al unir los dígitos).
+        ("consecutivo_anio", re.compile(rf"(?<!\d){consecutivo_5}{anio}(?!\d)")),
     ]
 
 
